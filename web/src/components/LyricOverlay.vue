@@ -181,8 +181,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
           </button>
 
           <h1 class="lyric-title">{{ track.title }}</h1>
-          <p class="lyric-meta">{{ formatArtists(track.artists) }}</p>
-          <p v-if="track.album.name" class="lyric-meta is-soft">{{ track.album.name }}</p>
+          <!-- 专辑跟在歌手右边、以中点分隔；专辑仍保持更淡的层次，避免和歌手抢注意力 -->
+          <p class="lyric-meta">
+            {{ formatArtists(track.artists) }}
+            <template v-if="track.album.name">
+              <span class="lyric-sep">·</span>
+              <span class="lyric-album">{{ track.album.name }}</span>
+            </template>
+          </p>
 
           <div class="lyric-tags">
             <SourcePicker align="left" />
@@ -465,7 +471,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   color: var(--text-soft);
 }
 
-.lyric-meta.is-soft {
+/* 歌手与专辑同行时的中点分隔符 */
+.lyric-sep {
+  margin: 0 5px;
+  color: var(--text-mute);
+}
+
+/* 专辑比歌手淡一档：两者同行，但主次不能丢（原来是单独一行，靠 is-soft 区分）。 */
+.lyric-album {
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-mute);
