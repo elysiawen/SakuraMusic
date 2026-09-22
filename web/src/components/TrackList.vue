@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import type { Platform, UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
 import { useLibraryStore } from '@/stores/library';
@@ -35,6 +35,20 @@ const isCurrent = (track: UnifiedTrack): boolean => player.current?.key === trac
 /** 点击行：播放这首歌，并把当前列表作为播放队列。 */
 async function play(track: UnifiedTrack): Promise<void> {
   await player.playTrack(track, props.tracks);
+}
+
+/**
+ * 触屏上没有双击手势，用户习惯「点整行就播」；桌面端仍保持双击播放，
+ * 避免变成「点一下想看看歌手，歌就切了」。
+ */
+const coarse = ref(false);
+onMounted(() => {
+  // 带上 pointer: coarse：浏览器设备预览里可能只报粗指针、不报无 hover。
+  coarse.value = window.matchMedia('(hover: none), (pointer: coarse)').matches;
+});
+
+function onRowClick(track: UnifiedTrack): void {
+  if (coarse.value) void play(track);
 }
 
 async function like(track: UnifiedTrack): Promise<void> {
@@ -81,6 +95,7 @@ function activeSourcePlatform(track: UnifiedTrack): Platform {
       :key="track.key"
       class="track-row"
       :class="{ 'is-current': isCurrent(track) }"
+      @click="onRowClick(track)"
       @dblclick="play(track)"
     >
       <div class="row-index">
@@ -88,7 +103,7 @@ function activeSourcePlatform(track: UnifiedTrack): Platform {
         <span v-else-if="numbered">{{ index + 1 }}</span>
       </div>
 
-      <button type="button" class="cover-btn" @click="play(track)">
+      <button type="button" class="cover-btn" @click.stop="play(track)">
         <CoverArt :src="track.album.cover" :size="compact ? 36 : 42" :alt="track.title" :seed="track.title" />
         <span class="cover-hover"><AppIcon name="play" :size="16" filled /></span>
       </button>

@@ -1,16 +1,58 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { usePlayerStore } from '@/stores/player';
 import AppIcon from './AppIcon.vue';
 
 /**
  * 音量控制：平时只是一个图标按钮，滑杆悬停时从上方浮出，
  * 避免控制区里出现一条常驻的横条。播放条与全屏播放页共用。
+ *
+ * 触屏设备没有 hover，滑杆永远浮不出来（等于手机上调不了音量），
+ * 所以指针为 coarse 时改成「点图标展开滑杆」，并由外层点击收起。
  */
 const player = usePlayerStore();
 
 const dragging = ref(false);
 const draft = ref(0);
+/** 触屏下点击展开的滑杆。 */
+const open = ref(false);
+const coarse = ref(false);
+const rootEl = ref<HTMLElement | null>(null);
+
+// 带上 pointer: coarse：浏览器设备预览里可能只报粗指针、不报无 hover。
+const media =
+  typeof window === 'undefined' ? null : window.matchMedia('(hover: none), (pointer: coarse)');
+
+function syncCoarse(): void {
+  coarse.value = Boolean(media?.matches);
+}
+
+onMounted(() => {
+  syncCoarse();
+  media?.addEventListener('change', syncCoarse);
+  document.addEventListener('pointerdown', onDocumentPointerDown);
+});
+
+onBeforeUnmount(() => {
+  media?.removeEventListener('change', syncCoarse);
+  document.removeEventListener('pointerdown', onDocumentPointerDown);
+});
+
+/** 点空白处收起滑杆（滑杆自身会 stop 掉冒泡）。 */
+function onDocumentPointerDown(event: PointerEvent): void {
+  if (!open.value) return;
+  const root = rootEl.value;
+  if (root && !root.contains(event.target as Node)) open.value = false;
+}
+
+/** 鼠标端保持「点击 = 静音」，触屏端点击改为展开/收起滑杆。 */
+function onIconClick(): void {
+  if (coarse.value) {
+    open.value = !open.value;
+    return;
+  }
+  player.toggleMute();
+}
 
 /** 拖拽中跟手显示草稿值，其余时候跟随实际音量。 */
 const level = computed(() => (dragging.value ? draft.value : player.muted ? 0 : player.volume));
@@ -43,18 +85,18 @@ function onUp(event: PointerEvent): void {
 </script>
 
 <template>
-  <div class="volume-control">
+  <div ref="rootEl" class="volume-control" :class="{ 'is-open': open }">
     <button
       class="icon-btn transport-side"
       :class="{ 'is-active': player.muted || player.volume === 0 }"
       type="button"
-      :title="player.muted ? '取消静音' : '静音'"
-      @click="player.toggleMute()"
+      :title="coarse ? '调节音量' : player.muted ? '取消静音' : '静音'"
+      @click="onIconClick"
     >
       <AppIcon :name="player.muted || player.volume === 0 ? 'volume-x' : 'volume'" :size="19" />
     </button>
 
-    <div class="volume-pop">
+    <div class="volume-pop" @pointerdown.stop>
       <div
         class="volume-track"
         role="slider"
@@ -117,7 +159,9 @@ function onUp(event: PointerEvent): void {
 }
 
 .volume-control:hover .volume-pop,
-.volume-pop:hover {
+.volume-pop:hover,
+/* 触屏：点图标展开（.is-open），因为没有 hover 可用。 */
+.volume-control.is-open .volume-pop {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);

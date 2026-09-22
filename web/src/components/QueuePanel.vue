@@ -178,4 +178,13 @@ watch(
 .queue-row:hover .queue-remove {
   opacity: 1;
 }
+
+/* 触屏没有 hover：移除按钮常显，否则手机上去不掉队列里的歌。 */
+@media (hover: none), (pointer: coarse) {
+  .queue-remove {
+    opacity: 1;
+    width: 34px;
+    height: 34px;
+  }
+}
 </style>

@@ -40,7 +40,8 @@ const iconName = computed(() => props.icon ?? (props.clickable ? 'refresh' : 'li
     @click.stop="clickable && emit('switch', platform)"
   >
     <AppIcon :name="iconName" :size="10" :stroke-width="2.4" />
-    {{ label }}
+    <!-- 文字包一层：窄屏下曲目行会把这段隐藏掉，只留图标（见 main.css 的 .badge-label） -->
+    <span class="badge-label">{{ label }}</span>
   </button>
 </template>
 

@@ -134,16 +134,18 @@ async function submit(): Promise<void> {
 .login-page {
   display: grid;
   place-items: center;
+  /* dvh：iOS 地址栏伸缩时 100vh 会把登录卡片顶出可视区。 */
   min-height: 100vh;
-  padding: 24px;
+  min-height: 100dvh;
+  padding: calc(24px + var(--safe-top)) 24px calc(24px + var(--safe-bottom));
   position: relative;
   z-index: 1;
 }
 
 .login-theme {
   position: fixed;
-  top: 20px;
-  right: 22px;
+  top: calc(20px + var(--safe-top));
+  right: calc(22px + var(--safe-right));
 }
 
 .login-card {

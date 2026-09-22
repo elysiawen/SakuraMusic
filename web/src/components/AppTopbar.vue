@@ -88,7 +88,8 @@ async function logout(): Promise<void> {
       />
     </div>
 
-    <span class="muted truncate" style="font-size: 12px; margin-left: auto">{{ modeSummary }}</span>
+    <!-- 窄屏会被 main.css 的 .topbar-summary 规则隐藏：手机顶栏放不下这串摘要 -->
+    <span class="muted truncate topbar-summary" style="font-size: 12px; margin-left: auto">{{ modeSummary }}</span>
 
     <ThemePicker />
 
@@ -98,7 +99,8 @@ async function logout(): Promise<void> {
           <img v-if="auth.user?.avatar" :src="auth.user.avatar" alt="" />
           <template v-else>{{ (auth.user?.nickname ?? 'S').slice(0, 1) }}</template>
         </span>
-        <span class="truncate" style="font-weight: 650; max-width: 110px">
+        <!-- 窄屏只留头像，用户名隐藏（见 main.css 的 .topbar-username） -->
+        <span class="truncate topbar-username" style="font-weight: 650; max-width: 110px">
           {{ auth.user?.nickname ?? '未登录' }}
         </span>
       </button>

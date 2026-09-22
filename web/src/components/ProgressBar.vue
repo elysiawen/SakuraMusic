@@ -114,6 +114,17 @@ const totalLabel = computed(() => formatDuration(player.duration * 1000));
   transition: height 0.18s ease;
 }
 
+/* 5px 高的条在手机上几乎点不中：铺一层透明的更大命中区（事件仍冒泡到 .bar）。 */
+.bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 30px;
+  transform: translateY(-50%);
+}
+
 .progress-bar.is-md .bar {
   height: 7px;
 }
@@ -157,5 +168,13 @@ const totalLabel = computed(() => formatDuration(player.duration * 1000));
 .bar.is-dragging .bar-thumb {
   opacity: 1;
   transform: none;
+}
+
+/* 触屏没有 hover，滑块也得常显，否则看不出进度条可以拖。 */
+@media (hover: none), (pointer: coarse) {
+  .bar-thumb {
+    opacity: 1;
+    transform: none;
+  }
 }
 </style>

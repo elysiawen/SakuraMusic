@@ -326,7 +326,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 26px 0;
+  /* 顶部让开刘海，否则收起按钮会被状态栏压住。 */
+  padding: calc(20px + var(--safe-top)) 26px 0;
 }
 
 .lyric-top-left {
@@ -622,7 +623,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 0 8vw 22px;
+  /* 底部让开 iPhone 的横条，否则进度条会被挡住。 */
+  padding: 0 8vw calc(22px + var(--safe-bottom));
 }
 
 .lyric-controls > :first-child {
@@ -686,7 +688,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 }
 
 @media (max-width: 900px) {
+  /*
+   * 全屏 64px 高斯模糊是手机上最贵的一笔 GPU 开销（整屏重绘 + 大纹理采样），
+   * 小屏降到 28px 视觉几乎无差别，滚动歌词明显更跟手。
+   */
+  .lyric-backdrop {
+    filter: blur(28px) saturate(1.4);
+  }
+
   .lyric-content {
+    /*
+     * 单列下必须显式写字模板：两行都留 auto 的话，align-content: stretch（默认）
+     * 会把多余高度平均分给两行，而信息区是顶对齐的 ——
+     * 于是歌名标签和歌词之间凭空空出一大块。
+     * 信息行按内容高度、歌词行吃掉剩余空间才符合预期。
+     */
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
     padding: 0 6vw;
@@ -709,9 +726,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
     justify-content: center;
   }
 
+  /*
+   * 单列布局就是手机/平板形态，歌词按移动端的习惯居中显示
+   * （桌面端保持左对齐，更像一张歌词本）。
+   * 注意 transform-origin 也要跟着从 left 移到 center：
+   * 活动行会放大 4.5%，origin 还在左边的话文字会整体向右偏。
+   */
+  .lyric-line {
+    text-align: center;
+    transform-origin: center center;
+  }
+
   .lyric-scroll {
     padding-top: 26vh;
-    padding-bottom: 26vh;
+    /*
+     * 底部留白收掉一半。26vh 的用意是让最后一句也能滚到垂直居中，
+     * 但手机上更希望歌词贴近底部控制区、少留一大片空白。
+     */
+    padding-bottom: 13vh;
   }
 
   .lyric-hints {
@@ -719,8 +751,49 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   }
 }
 
+/* 手机竖屏：把信息区再压一档，高度尽量让给歌词。 */
+@media (max-width: 480px) {
+  .lyric-content {
+    gap: 10px;
+    padding: 0 5vw;
+  }
+
+  .cover-stage {
+    width: min(30vh, 42vw, 156px);
+    margin-bottom: 12px;
+  }
+
+  .lyric-title {
+    font-size: 19px;
+  }
+
+  .lyric-meta {
+    font-size: 12.5px;
+  }
+
+  .lyric-tags {
+    margin-top: 8px;
+  }
+
+  /* 每行再收一点，一屏能多显示两行左右。 */
+  .lyric-line {
+    padding: 6px 0;
+    font-size: 18px;
+  }
+
+  /* 竖屏再收一档底部留白，让歌词一直下探到进度条附近。 */
+  .lyric-scroll {
+    padding-bottom: 8vh;
+  }
+}
+
 @media (max-height: 560px) {
   .lyric-content {
+    /*
+     * 矮窗口（横屏手机）会回到两列布局，此时行模板也必须回到单行，
+     * 否则上一段设的 auto + 1fr 会多分出一行、底部空掉一大截。
+     */
+    grid-template-rows: minmax(0, 1fr);
     /* 窗口很矮时进一步收窄两列，把空间让给歌词的行数。 */
     grid-template-columns: clamp(120px, 26vh, 240px) minmax(300px, clamp(380px, 46vw, 640px));
   }
