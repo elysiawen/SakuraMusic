@@ -1,7 +1,23 @@
+<script lang="ts">
+import type { DiscoverFeed } from '@/api/types';
+
+/**
+ * 首页推荐缓存，刻意放在模块作用域。
+ * `<script setup>` 里的变量会随组件卸载一起销毁，而推荐内容是上游随机给的：
+ * 「首页 → 进详情页 → 返回」如果重新请求，用户会看到完全另一批推荐。
+ * 所以一次会话内复用同一批，点「换一批」才刷新。
+ */
+let cachedFeed: DiscoverFeed | null = null;
+
+/** 缓存建立时的绑定情况：绑定关系变了，个性化板块的内容也会不同，需要重拉。 */
+let cachedSignature = '';
+</script>
+
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { musicApi } from '@/api';
-import { PLATFORM_LABEL, type DiscoverFeed, type PlaylistSummary, type UnifiedTrack } from '@/api/types';
+// DiscoverFeed 已在上面的普通 <script> 块里导入（两块共享同一模块作用域）
+import { PLATFORM_LABEL, type PlaylistSummary, type UnifiedTrack } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import PlaylistCard from '@/components/PlaylistCard.vue';
@@ -34,11 +50,34 @@ const greeting = computed(() => {
   return '晚上好';
 });
 
-async function load(): Promise<void> {
+/** 绑定情况决定「每日推荐」「私人 FM」这类个性化板块是否可用。 */
+const signature = computed(() => [...credentials.boundPlatforms].sort().join(','));
+
+/*
+ * 凭据列表是异步加载的，有可能晚于首页显示。它一到就同步一次签名，
+ * 免得把「刚加载完」误判成「绑定关系变了」——否则每次刷新页面后
+ * 第一次返回首页都会重新请求，又变回「点回来就换一批」。
+ */
+watch(signature, (value) => {
+  if (feed.value) cachedSignature = value;
+});
+
+/** `force = true` 时忽略缓存（「换一批」按钮）。 */
+async function load(force = false): Promise<void> {
+  if (!force && cachedFeed && cachedSignature === signature.value) {
+    feed.value = cachedFeed;
+    loading.value = false;
+    return;
+  }
+
   loading.value = true;
   try {
-    feed.value = await musicApi.discoverFeed();
+    const data = await musicApi.discoverFeed();
+    cachedFeed = data;
+    cachedSignature = signature.value;
+    feed.value = data;
   } catch (error) {
+    cachedFeed = null; // 失败不缓存，下次进来可以重试
     toast.error(error instanceof Error ? error.message : '推荐内容加载失败');
   } finally {
     loading.value = false;
@@ -59,7 +98,7 @@ onMounted(() => {
           同一首歌会在两个平台之间自动合并，点封面上的平台标签即可手动切换音源。
         </p>
       </div>
-      <button class="btn" type="button" :disabled="loading" @click="load">
+      <button class="btn" type="button" :disabled="loading" @click="load(true)">
         <AppIcon name="refresh" :size="14" :class="{ spin: loading }" />
         换一批
       </button>
@@ -97,7 +136,7 @@ onMounted(() => {
       title="暂时没有可展示的推荐"
       description="可能是两个上游服务未启动，或未绑定账号导致个性化内容不可用。"
     >
-      <button class="btn btn-primary" type="button" @click="load">重新加载</button>
+      <button class="btn btn-primary" type="button" @click="load(true)">重新加载</button>
     </EmptyState>
 
     <template v-else>
