@@ -257,16 +257,68 @@ pnpm dev:web           # 终端 5  前端
 
 ## 生产部署
 
+### 一键启动
+
 ```powershell
-pnpm build              # 构建网关 (dist) 与前端 (web/dist)
-pnpm start:gateway      # 生产模式启动网关
+pnpm start:prod
 ```
 
-前端 `web/dist` 是纯静态产物，交给任意静态服务器即可（Nginx / `vite preview` / 网关反代均可）。若前后端不同源：
+它会先确保构建产物存在（缺 `gateway/dist` 或 `web/dist` 时自动执行 `pnpm build`），然后拉起
+**网易云上游 :3000、QQ 音乐上游 :8080、网关（跑编译产物）:8787、前端静态服务 :6173**，
+以及可选的 QQ 音乐 App 扫码 sidecar :8090。浏览器直接开 <http://127.0.0.1:6173> 即可。
 
-1. 把前端域名加入 `gateway/.env` 的 `WEB_ORIGIN`；
-2. 在静态服务器上把 `/api` 反向代理到网关；
-3. HTTPS 环境把 `COOKIE_SECURE=true`。
+| 参数 | 作用 |
+|---|---|
+| `--no-build` | 缺产物时直接报错，不自动构建 |
+| `--no-web` | 不启动内置静态服务（已用 Nginx 托管 `web/dist` 时） |
+| `--no-sidecar` | 不启动 QQ 音乐 App 扫码服务 |
+
+与开发用的 `pnpm start:all` 的区别：网关跑 `dist/index.js` 而非 `tsx watch`，前端跑静态产物而非 Vite dev server。
+`--no-web` 之外也可以单独运行 `pnpm start:web`（由 `WEB_HOST` / `WEB_PORT` / `GATEWAY_URL` / `WEB_DIST` 控制）。
+临时换端口不必改代码，例如 PowerShell 下 `$env:WEB_PORT="80"` 后再执行 `pnpm start:prod`。
+
+> 内置静态服务是零依赖的 `node:http` 实现：托管 `web/dist`、SPA 路由回退、`/api` 原样反代（含音频流的 `Range`）。
+> 它与网关同源，因此不需要额外配置 CORS。**它是明文 HTTP**，适合单机/内网；面向公网请按下文用 Nginx 终结 TLS。
+
+### 面向公网（Nginx + HTTPS）
+
+```powershell
+pnpm build                  # 构建网关 (dist) 与前端 (web/dist)
+pnpm start:prod --no-web    # 只拉起后端进程，前端交给 Nginx
+```
+
+在 Nginx 上托管 `web/dist`，并把 `/api` 反向代理到网关：
+
+```nginx
+location / {
+  root /srv/sakura-music/web/dist;
+  try_files $uri $uri/ /index.html;   # SPA 路由回退
+}
+
+location /api/ {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header Range $http_range;      # 音频流断点续传依赖它
+  proxy_set_header If-Range $http_if_range;
+  proxy_buffering off;                     # 流式代理，别缓冲
+  proxy_read_timeout 300s;
+}
+```
+
+这时前后端同源，CORS 不会触发；仍建议把正式域名写进 `gateway/.env`：
+
+1. `WEB_ORIGIN=https://你的域名`（多条用英文逗号分隔）；
+2. `COOKIE_SECURE=true`（HTTPS 环境必须，否则登录态不生效）；
+3. `ALLOW_REGISTER=false`（先注册出首个管理员账号再关闭）。
+
+### 长期运行
+
+上述命令都是前台进程，适合排查问题。要开机自启与崩溃重拉：
+
+- **Linux**：为网关、静态服务、两个上游各写一个 systemd unit（`Restart=always`）；
+- **Windows**：用 NSSM / WinSW 注册成服务，或 `pm2 start` 托管。
+
+`gateway/.data/credential.key`（未显式配置 `CREDENTIAL_KEY` 时生成）是解密已入库凭据的唯一钥匙，**迁移机器必须一并复制**。
 
 ---
 
