@@ -1,0 +1,230 @@
+/* =========================================================================
+   主题配色（preset）
+   -------------------------------------------------------------------------
+   与「明暗模式」正交：模式由 <html data-theme="light|dark"> 控制，
+   配色由 <html data-preset="..."> 控制，两者可自由组合。
+
+   实现约定：
+   - 毛玻璃底色统一由 --glass-tint（"r, g, b" 三元组）驱动，
+     所以在 main.css 里 --surface 等变量的 rgba(var(--glass-tint), a) 会自动跟着配色变化。
+   - 每个配色的「浅色块」只在 html[data-preset] 上覆盖 --brand-* 与背景，
+     因此需要同时提供 html[data-theme='dark'][data-preset] 的深色块来覆盖 --bg / --bg-accent / --glass-tint，
+     否则浅色的背景会在深色模式下压过 [data-theme='dark']（同为 :root 级特异度，靠顺序取胜不可靠）。
+   ========================================================================= */
+
+/* ------------------------------- 樱花（默认） ------------------------------- */
+html[data-preset='sakura'] {
+  --brand-50: #fff5f8;
+  --brand-100: #ffe8ef;
+  --brand-200: #ffd0de;
+  --brand-300: #ffabc3;
+  --brand-400: #ff86a6;
+  --brand-500: #f9678f;
+  --brand-600: #e04a74;
+  --brand-700: #b93459;
+  --brand-rgb: 249, 103, 143;
+  --bg: #fdf6f8;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(255, 171, 195, 0.4), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(255, 208, 222, 0.42), transparent 42%),
+    radial-gradient(circle at 70% 92%, rgba(214, 200, 255, 0.32), transparent 48%);
+  --glass-tint: 255, 255, 255;
+}
+
+html[data-theme='dark'][data-preset='sakura'] {
+  --bg: #16111a;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(249, 103, 143, 0.22), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(160, 120, 255, 0.18), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(249, 103, 143, 0.14), transparent 48%);
+  --glass-tint: 42, 32, 47;
+}
+
+/* ------------------------------- 抹茶 ------------------------------- */
+html[data-preset='matcha'] {
+  --brand-50: #f2fbf4;
+  --brand-100: #e0f6e6;
+  --brand-200: #c0ecd0;
+  --brand-300: #93dcb0;
+  --brand-400: #5fc78d;
+  --brand-500: #35ab6d;
+  --brand-600: #238f58;
+  --brand-700: #1a7046;
+  --brand-rgb: 53, 171, 109;
+  --bg: #f5fbf7;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(147, 220, 176, 0.42), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(192, 236, 208, 0.44), transparent 42%),
+    radial-gradient(circle at 72% 92%, rgba(206, 238, 214, 0.34), transparent 48%);
+  --glass-tint: 252, 255, 253;
+}
+
+html[data-theme='dark'][data-preset='matcha'] {
+  --bg: #0f1714;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(53, 171, 109, 0.2), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(147, 220, 176, 0.14), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(35, 143, 88, 0.16), transparent 48%);
+  --glass-tint: 32, 42, 37;
+}
+
+/* ------------------------------- 深海 ------------------------------- */
+html[data-preset='ocean'] {
+  --brand-50: #f2f8ff;
+  --brand-100: #e2f0ff;
+  --brand-200: #c4e0ff;
+  --brand-300: #93c8fb;
+  --brand-400: #5aa8f0;
+  --brand-500: #2f8ae0;
+  --brand-600: #1e6fbe;
+  --brand-700: #175699;
+  --brand-rgb: 47, 138, 224;
+  --bg: #f4f9fd;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(147, 200, 251, 0.42), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(196, 224, 255, 0.44), transparent 42%),
+    radial-gradient(circle at 72% 92%, rgba(178, 222, 245, 0.32), transparent 48%);
+  --glass-tint: 251, 253, 255;
+}
+
+html[data-theme='dark'][data-preset='ocean'] {
+  --bg: #0d141c;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(47, 138, 224, 0.2), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(147, 200, 251, 0.14), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(30, 111, 190, 0.16), transparent 48%);
+  --glass-tint: 30, 40, 52;
+}
+
+/* ------------------------------- 紫藤 ------------------------------- */
+html[data-preset='lavender'] {
+  --brand-50: #f8f6ff;
+  --brand-100: #efeaff;
+  --brand-200: #ddd3ff;
+  --brand-300: #c0b0fb;
+  --brand-400: #9f8af3;
+  --brand-500: #8266e6;
+  --brand-600: #6a4ecb;
+  --brand-700: #523ba3;
+  --brand-rgb: 130, 102, 230;
+  --bg: #f8f6fd;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(192, 176, 251, 0.42), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(221, 211, 255, 0.44), transparent 42%),
+    radial-gradient(circle at 72% 92%, rgba(255, 205, 240, 0.3), transparent 48%);
+  --glass-tint: 253, 252, 255;
+}
+
+html[data-theme='dark'][data-preset='lavender'] {
+  --bg: #12111c;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(130, 102, 230, 0.22), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(192, 176, 251, 0.14), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(180, 120, 220, 0.14), transparent 48%);
+  --glass-tint: 38, 36, 54;
+}
+
+/* ------------------------------- 晚霞 ------------------------------- */
+html[data-preset='sunset'] {
+  --brand-50: #fff7f2;
+  --brand-100: #ffeade;
+  --brand-200: #ffd4b8;
+  --brand-300: #ffb182;
+  --brand-400: #ff8c52;
+  --brand-500: #f56b2d;
+  --brand-600: #d5541c;
+  --brand-700: #a83f14;
+  --brand-rgb: 245, 107, 45;
+  --bg: #fdf7f3;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(255, 177, 130, 0.42), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(255, 212, 184, 0.44), transparent 42%),
+    radial-gradient(circle at 72% 92%, rgba(255, 175, 155, 0.3), transparent 48%);
+  --glass-tint: 255, 253, 251;
+}
+
+html[data-theme='dark'][data-preset='sunset'] {
+  --bg: #1a1310;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(245, 107, 45, 0.2), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(255, 177, 130, 0.14), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(213, 84, 28, 0.16), transparent 48%);
+  --glass-tint: 50, 38, 32;
+}
+
+/* ------------------------------- 水墨 ------------------------------- */
+html[data-preset='ink'] {
+  --brand-50: #f7f8fa;
+  --brand-100: #eef1f5;
+  --brand-200: #dde3ea;
+  --brand-300: #c2ccd8;
+  --brand-400: #9aa8b8;
+  --brand-500: #74849a;
+  --brand-600: #5b6b80;
+  --brand-700: #465467;
+  --brand-rgb: 116, 132, 154;
+  --bg: #f7f8fa;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(194, 204, 216, 0.45), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(221, 227, 234, 0.5), transparent 42%),
+    radial-gradient(circle at 72% 92%, rgba(214, 222, 234, 0.34), transparent 48%);
+  --glass-tint: 255, 255, 255;
+}
+
+html[data-theme='dark'][data-preset='ink'] {
+  --bg: #101317;
+  --bg-accent: radial-gradient(circle at 12% 6%, rgba(116, 132, 154, 0.18), transparent 45%),
+    radial-gradient(circle at 88% 4%, rgba(194, 204, 216, 0.1), transparent 42%),
+    radial-gradient(circle at 72% 94%, rgba(90, 107, 128, 0.14), transparent 48%);
+  --glass-tint: 34, 38, 44;
+}
+
+/* --------------------------- 配色选择器（共用样式） --------------------------- */
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.preset-swatch {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px 7px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.preset-swatch:hover {
+  background: var(--surface-strong);
+  border-color: var(--border);
+  transform: translateY(-2px);
+}
+
+.preset-swatch.is-active {
+  border-color: var(--brand-500);
+  background: var(--surface-strong);
+  box-shadow: 0 10px 22px -16px var(--brand-600);
+}
+
+.preset-dot {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5), var(--shadow-sm);
+}
+
+.preset-name {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-soft);
+}
+
+.preset-swatch.is-active .preset-name {
+  color: var(--brand-600);
+}
+
+.preset-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--brand-500);
+}

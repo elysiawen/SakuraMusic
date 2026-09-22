@@ -1,0 +1,11 @@
+node_modules/
+dist/
+# 本地接口参考，不随仓库发布（要发布就删掉这一行）
+docs/
+.data/
+.runtime/
+__pycache__/
+*.log
+.env
+.env.local
+.DS_Store

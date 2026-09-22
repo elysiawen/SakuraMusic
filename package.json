@@ -1,0 +1,24 @@
+{
+  "name": "sakura-music",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sakura Music - 聚合网易云音乐与 QQ 音乐的自建音乐平台",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "install:all": "pnpm install",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "db:init": "pnpm --filter @sakura/gateway db:init",
+    "dev:gateway": "pnpm --filter @sakura/gateway dev",
+    "dev:web": "pnpm --filter @sakura/web dev",
+    "build": "pnpm --filter @sakura/gateway build && pnpm --filter @sakura/web build",
+    "start:gateway": "pnpm --filter @sakura/gateway start",
+    "start:netease": "node ../api-enhanced/app.js",
+    "start:qq": "node scripts/run-qq-upstream.mjs",
+    "start:sidecar": "node scripts/run-sidecar.mjs",
+    "start:all": "node scripts/start-all.mjs",
+    "typecheck": "pnpm --filter @sakura/gateway typecheck && pnpm --filter @sakura/web typecheck"
+  }
+}
