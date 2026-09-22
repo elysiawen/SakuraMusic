@@ -96,7 +96,7 @@ export const config = {
   databaseUrl,
   dbSsl: readDbSslMode(),
   credentialKey: loadCredentialKey(),
-  neteaseBaseUrl: (process.env.NETEASE_BASE_URL?.trim() || 'http://127.0.0.1:3000').replace(/\/+$/, ''),
+  neteaseBaseUrl: (process.env.NETEASE_BASE_URL?.trim() || 'http://127.0.0.1:3700').replace(/\/+$/, ''),
   qqBaseUrl: (process.env.QQ_BASE_URL?.trim() || 'http://127.0.0.1:8080').replace(/\/+$/, ''),
   /** QQ 音乐客户端（App）扫码登录 sidecar，见 sidecar/qq_mobile_login.py。 */
   qqSidecarBaseUrl: (process.env.QQ_SIDECAR_BASE_URL?.trim() || 'http://127.0.0.1:8090').replace(/\/+$/, ''),

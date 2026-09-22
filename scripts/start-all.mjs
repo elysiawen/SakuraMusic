@@ -1,6 +1,6 @@
 /**
  * 一键拉起全部进程（不使用 Docker）：
- *   1. 网易云上游 api-enhanced          -> http://127.0.0.1:3000
+ *   1. 网易云上游 api-enhanced          -> http://127.0.0.1:3700
  *   2. QQ 音乐上游 QQMusicApi (FastAPI)  -> http://127.0.0.1:8080
  *   3. Sakura 网关                       -> http://127.0.0.1:8787
  *   4. Sakura 前端（Vite dev server）    -> http://localhost:5173
@@ -33,16 +33,19 @@ const sidecarPython = [
   resolve(parent, 'QQMusicApi/.venv/bin/python'),
 ].find((candidate) => existsSync(candidate));
 
+/** 网易云上游端口：默认 3700，需要时用 NETEASE_PORT 覆盖（同时改 gateway/.env 的 NETEASE_BASE_URL）。 */
+const neteasePort = process.env.NETEASE_PORT?.trim() || '3700';
+
 const tasks = [
   {
     name: 'netease',
     label: '网易云上游',
-    url: 'http://127.0.0.1:3000',
+    url: `http://127.0.0.1:${neteasePort}`,
     command: process.execPath,
     args: ['app.js'],
     cwd: resolve(parent, 'api-enhanced'),
     shell: false,
-    env: { PORT: '3000' },
+    env: { PORT: neteasePort },
     required: resolve(parent, 'api-enhanced/app.js'),
   },
   {

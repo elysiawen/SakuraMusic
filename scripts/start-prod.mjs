@@ -6,7 +6,7 @@
  *   2. 前端跑 `web/dist` 静态产物（内置静态服务 + /api 反代），而不是 Vite dev server；
  *   3. 缺产物时会先自动执行 `pnpm build`。
  *
- * 会拉起：网易云上游 :3000、QQ 音乐上游 :8080、网关 :8787、前端 :6173，
+ * 会拉起：网易云上游 :3700、QQ 音乐上游 :8080、网关 :8787、前端 :6173，
  * 以及可选的 QQ 音乐 App 扫码 sidecar :8090。
  *
  * 用法：
@@ -40,6 +40,11 @@ if (args.includes('--help') || args.includes('-h')) {
 
 const webHost = process.env.WEB_HOST?.trim() || '127.0.0.1';
 const webPort = process.env.WEB_PORT?.trim() || '6173';
+/**
+ * 网易云上游监听端口，默认 3700（3000 太容易被别的服务占用）。
+ * 需要临时换端口用 NETEASE_PORT 覆盖；改完记得同步 gateway/.env 的 NETEASE_BASE_URL，两者必须一致。
+ */
+const neteasePort = process.env.NETEASE_PORT?.trim() || '3700';
 
 function fail(message) {
   console.error(`\n[sakura] ${message}\n`);
@@ -97,12 +102,12 @@ const tasks = [
   {
     name: 'netease',
     label: '网易云上游',
-    url: 'http://127.0.0.1:3000',
+    url: `http://127.0.0.1:${neteasePort}`,
     command: process.execPath,
     args: ['app.js'],
     cwd: resolve(parent, 'api-enhanced'),
     shell: false,
-    env: { PORT: '3000' },
+    env: { PORT: neteasePort },
     required: resolve(parent, 'api-enhanced/app.js'),
   },
   {
