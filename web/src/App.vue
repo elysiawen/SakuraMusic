@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import type { Platform } from '@/api/types';
 import AppSidebar from '@/components/AppSidebar.vue';
@@ -42,6 +42,48 @@ watch(
   },
   { immediate: true },
 );
+
+/*
+ * 内容区的滚动发生在内部的 .app-content 上（不是 window），
+ * 所以浏览器与 vue-router 自带的滚动还原都无效 —— 只能按路由自己记。
+ */
+const contentRef = ref<HTMLElement | null>(null);
+/** key 用 route.fullPath，因此「同一关键词的搜索页」会被当成同一处。 */
+const scrollPositions = new Map<string, number>();
+
+function rememberScroll(key: string): void {
+  const element = contentRef.value;
+  if (element) scrollPositions.set(key, element.scrollTop);
+}
+
+/**
+ * 还原滚动位置。页面数据通常是异步加载的，刚渲染时容器还没那么高，
+ * 直接赋 scrollTop 会被夹到当前可滚范围 —— 所以持续重试若干帧，等高度长出来。
+ */
+function restoreScroll(top: number): void {
+  const element = contentRef.value;
+  if (!element) return;
+
+  let frames = 0;
+  const step = (): void => {
+    element.scrollTop = top;
+    if (top > 0 && element.scrollTop < top - 1 && frames < 180) {
+      frames += 1;
+      requestAnimationFrame(step);
+    }
+  };
+  step();
+}
+
+watch(
+  () => route.fullPath,
+  (to, from) => {
+    // watch 默认在 DOM 更新前触发，此刻 .app-content 还是上一个页面的内容，
+    // 正好用来记录「离开时的位置」；新页面渲染完再还原目标位置。
+    if (from) rememberScroll(from);
+    void nextTick(() => restoreScroll(scrollPositions.get(to) ?? 0));
+  },
+);
 </script>
 
 <template>
@@ -56,7 +98,7 @@ watch(
 
     <div class="app-main">
       <AppTopbar />
-      <main class="app-content">
+      <main ref="contentRef" class="app-content">
         <RouterView v-slot="{ Component }">
           <component :is="Component" class="fade-in" />
         </RouterView>

@@ -122,33 +122,39 @@ function activeSourcePlatform(track: UnifiedTrack): Platform {
         />
       </div>
 
-      <!-- 歌手与专辑都带上平台信息，因此可以直接跳转到对应详情页 -->
-      <div class="row-sub row-artist truncate">
-        <template v-for="(artist, artistIndex) in track.artists" :key="`${artist.name}-${artistIndex}`">
+      <!--
+        歌手与专辑都带上平台信息，因此可以直接跳转到对应详情页。
+        外层 .row-meta 在桌面端是 display: contents（两列布局不受影响），
+        手机端才变成 flex，把两者合成「歌手 · 专辑」一行（见 main.css）。
+      -->
+      <div class="row-meta">
+        <div class="row-sub row-artist truncate">
+          <template v-for="(artist, artistIndex) in track.artists" :key="`${artist.name}-${artistIndex}`">
+            <RouterLink
+              v-if="artist.id && artist.platform"
+              class="row-link"
+              :to="{ name: 'artist', params: { platform: artist.platform, id: artist.id } }"
+              @click.stop
+              @dblclick.stop
+            >
+              {{ artist.name }}
+            </RouterLink>
+            <span v-else>{{ artist.name }}</span>
+            <span v-if="artistIndex < track.artists.length - 1"> / </span>
+          </template>
+        </div>
+        <div class="row-sub row-album truncate" :title="track.album.name">
           <RouterLink
-            v-if="artist.id && artist.platform"
+            v-if="track.album.id && track.album.platform"
             class="row-link"
-            :to="{ name: 'artist', params: { platform: artist.platform, id: artist.id } }"
+            :to="{ name: 'album', params: { platform: track.album.platform, id: track.album.id } }"
             @click.stop
             @dblclick.stop
           >
-            {{ artist.name }}
+            {{ track.album.name }}
           </RouterLink>
-          <span v-else>{{ artist.name }}</span>
-          <span v-if="artistIndex < track.artists.length - 1"> / </span>
-        </template>
-      </div>
-      <div class="row-sub row-album truncate" :title="track.album.name">
-        <RouterLink
-          v-if="track.album.id && track.album.platform"
-          class="row-link"
-          :to="{ name: 'album', params: { platform: track.album.platform, id: track.album.id } }"
-          @click.stop
-          @dblclick.stop
-        >
-          {{ track.album.name }}
-        </RouterLink>
-        <template v-else>{{ track.album.name || '—' }}</template>
+          <template v-else>{{ track.album.name || '—' }}</template>
+        </div>
       </div>
       <div class="row-sub row-duration">{{ formatDuration(track.durationMs) }}</div>
 

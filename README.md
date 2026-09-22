@@ -5,7 +5,7 @@
 - 两个上游项目（`../api-enhanced`、`../QQMusicApi`）**保持零改动**，原样运行即可。
 - 不使用 Docker，全部为原生进程；数据库使用你已有的 PostgreSQL 实例。
 - 前端：Vue 3 + Vite + TypeScript + Pinia；网关：Node.js + Fastify + TypeScript。
-- 要开发其它客户端（桌面端 / 移动端 / 第三方前端）？接口契约见 **[网关 API 文档](docs/API.md)**——全部 40 个端点、返回结构、错误码与播放链路。
+- 要开发其它客户端（桌面端 / 移动端 / 第三方前端）？接口清单见下文 **[主要接口](#主要接口)**，完整实现以 `gateway/src/routes/` 为准。
 
 ---
 
@@ -67,13 +67,17 @@ sakura-music/
 │  │  ├─ upstream/          netease.ts、qq.ts 两个平台适配器
 │  │  ├─ services/          账户、凭据保险库、聚合、音频流、音乐库
 │  │  └─ routes/            HTTP 路由
-│  └─ .env.example
 ├─ web/                     Vue 3 + Vite 前端（毛玻璃 + 6 套配色，默认深海蓝，浅色/暗色）
-├─ docs/API.md              网关 HTTP 接口文档（给其他客户端开发者）
 ├─ sidecar/                 QQ 音乐 App 扫码服务（Python，复用 QQMusicApi 的 venv）
-├─ scripts/start-all.mjs    一键拉起全部 5 个进程
-└─ .env.example             环境变量模板
+├─ scripts/
+│  ├─ bootstrap.mjs         首次准备：克隆上游、装依赖、生成 gateway/.env、建表
+│  ├─ start-all.mjs         开发模式一键拉起 5 个进程（前端跑 Vite dev server）
+│  ├─ start-prod.mjs        生产模式一键拉起（网关跑 dist、前端跑静态产物）
+│  └─ serve-web.mjs         零依赖静态服务：托管 web/dist + 反代 /api（可单独运行）
+└─ .env.example             环境变量模板（复制为 gateway/.env）
 ```
+
+> `gateway/.env` 与仓库根的 `.env` 都会被网关加载，模板统一放在仓库根 `.env.example`。
 
 ---
 
@@ -187,9 +191,9 @@ pnpm dev:web           # 终端 5  前端
 |---|---|
 | 账户系统 | 注册 / 登录 / 登出、HttpOnly Cookie + 服务端 Session、scrypt 密码散列、改昵称与头像、改密码（吊销全部会话） |
 | 凭据管理 | 双平台扫码登录（QQ 音乐支持 **手机 QQ / 微信 / QQ 音乐 App** 三种码）、强制选择存储位置、查看状态、刷新、解绑 |
-| 聚合搜索 | 两个平台并发搜索 → 标题+歌手归一化去重 → 相关性排序，同一首歌带多个 `sources` |
+| 聚合搜索 | 两个平台并发搜索 → 标题+歌手归一化去重 → 相关性排序，同一首歌带多个 `sources`；页签与页码写入 URL，点进详情再返回仍停在原处 |
 | 播放 | 底部播放条（进度拖动、音量、上下首、列表/单曲/不循环、随机）、音质切换、**手动切源**、断点续传的 Range 代理 |
-| 歌词 | LRC 解析、翻译/罗马音合并、逐行滚动、点击跳转、全屏歌词页 |
+| 歌词 | LRC 解析、翻译/罗马音合并、逐行滚动、点击跳转、全屏歌词页（歌手与专辑可直接点进详情页） |
 | 音乐库 | 本地歌单增删改、收藏、播放历史（自动合并 5 分钟内的重复播放） |
 | 发现 | 网易云每日推荐 / 私人 FM / 榜单，QQ 猜你喜欢 / 新歌速递 / 热门歌单 / 排行榜 |
 | 外观 | 毛玻璃质感；明暗模式（浅色 / 暗色 / 跟随系统）与 6 套主题配色（樱花 / 抹茶 / 深海 / 紫藤 / 晚霞 / 水墨）可自由组合，樱花飘落背景动画，响应式布局 |
@@ -280,45 +284,98 @@ pnpm start:prod
 > 内置静态服务是零依赖的 `node:http` 实现：托管 `web/dist`、SPA 路由回退、`/api` 原样反代（含音频流的 `Range`）。
 > 它与网关同源，因此不需要额外配置 CORS。**它是明文 HTTP**，适合单机/内网；面向公网请按下文用 Nginx 终结 TLS。
 
-### 面向公网（Nginx + HTTPS）
+### 面向公网（Nginx 托管静态 + /api 反代）
+
+生产推荐让 Nginx 直接托管 `web/dist`：省掉内置静态服务那一跳，`sendfile` / gzip / 长缓存都能用上，网关只负责 `/api`。
 
 ```powershell
 pnpm build                  # 构建网关 (dist) 与前端 (web/dist)
-pnpm start:prod --no-web    # 只拉起后端进程，前端交给 Nginx
+pnpm start:prod --no-web    # 只拉起后端进程（上游 ×2 + 网关 + 可选 sidecar）
 ```
 
-在 Nginx 上托管 `web/dist`，并把 `/api` 反向代理到网关：
+站点根目录指向 `sakura-music/web/dist`，`server {}` 里只需要这四段：
 
 ```nginx
-location / {
-  root /srv/sakura-music/web/dist;
-  try_files $uri $uri/ /index.html;   # SPA 路由回退
+# 1) 带内容哈希的静态资源：长期强缓存
+location ^~ /assets/ {
+    expires 365d;
+    add_header Cache-Control "public, immutable";
+    access_log off;
+    try_files $uri =404;            # 真缺文件时给 404，别回退成 HTML
 }
 
+# 2) 入口页不缓存：发版后客户端立刻拿得到新的资源清单
+location = /index.html {
+    expires -1;
+}
+
+# 3) 网关 API
 location /api/ {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_set_header Host $host;
-  proxy_set_header Range $http_range;      # 音频流断点续传依赖它
-  proxy_set_header If-Range $http_if_range;
-  proxy_buffering off;                     # 流式代理，别缓冲
-  proxy_read_timeout 300s;
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # 音频流：Range 透传 + 关闭缓冲，否则起播慢、拖动卡
+    proxy_set_header Range $http_range;
+    proxy_set_header If-Range $http_if_range;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+}
+
+# 4) SPA 路由回退 —— 必须放最后，否则 /discover、/search 这类前端路由会 404
+location / {
+    try_files $uri $uri/ /index.html;
 }
 ```
 
-这时前后端同源，CORS 不会触发；仍建议把正式域名写进 `gateway/.env`：
+三个几乎必踩的坑：
 
-1. `WEB_ORIGIN=https://你的域名`（多条用英文逗号分隔）；
-2. `COOKIE_SECURE=true`（HTTPS 环境必须，否则登录态不生效）；
-3. `ALLOW_REGISTER=false`（先注册出首个管理员账号再关闭）。
+| 现象 | 原因 |
+|---|---|
+| 接口全 404 | `proxy_pass http://127.0.0.1:8787**/**;` 多了尾斜杠会把 `/api` 前缀剥掉，必须**不带** |
+| `duplicate location "/"` | 面板建的静态站自带一个 `location /`，把 `try_files` 加进那一个即可，别再新建一个 |
+| `/discover` 直接 404 | 漏了 `try_files $uri $uri/ /index.html;`——`index` 指令只管目录索引，兜不住前端路由 |
 
-### 长期运行
+### HTTPS 与 Cookie
 
-上述命令都是前台进程，适合排查问题。要开机自启与崩溃重拉：
+TLS 由 Nginx 或 CDN 终结即可。上线后改 `gateway/.env` 并重启网关：
 
-- **Linux**：为网关、静态服务、两个上游各写一个 systemd unit（`Restart=always`）；
+```ini
+WEB_ORIGIN=https://你的域名     # 多条用英文逗号分隔
+COOKIE_SECURE=true              # 顺序别反：先有 HTTPS，再打开它
+ALLOW_REGISTER=false            # 先注册出首个管理员账号，再关掉注册
+```
+
+前后端同源（同一个 `server{}` 同时提供静态与 `/api`），CORS 不会触发，`WEB_ORIGIN` 只是兜底。
+
+> **挂了 CDN 的话**：`/api/` 一定要设成「不缓存」（登录态 Cookie 与音频流被缓存会出大问题），缓存策略选「遵循源站」；`index.html` 已经返回 `Cache-Control: no-cache`，CDN 就不会再缓存入口页。
+
+### 长期运行与自启
+
+`pnpm start:prod` 是前台进程，适合排查问题。要开机自启 + 崩溃重拉：
+
+- **宝塔面板**：装「Supervisor 管理器」，启动命令用 `cd /www/wwwroot/music/SakuraMusic && pnpm start:prod --no-web`（静态已交给 Nginx）。注意 Supervisor 的环境变量很干净，`node` / `pnpm` / `uv` 常常不在 PATH 里，用绝对路径最稳。
+- **Linux**：为网关、两个上游各写一个 systemd unit（`Restart=always`，`WorkingDirectory` 指向各自目录）。
 - **Windows**：用 NSSM / WinSW 注册成服务，或 `pm2 start` 托管。
 
-`gateway/.data/credential.key`（未显式配置 `CREDENTIAL_KEY` 时生成）是解密已入库凭据的唯一钥匙，**迁移机器必须一并复制**。
+防火墙只放行 `80` / `443`；`3700`、`8080`、`8787`、`8090` 一律只听 `127.0.0.1`。
+
+### 发版
+
+```powershell
+pnpm build      # 产物就地写进 gateway/dist 与 web/dist
+```
+
+Nginx 托管 `web/dist` 时**不用拷文件、不用重启 Nginx、不用重启网关**（只有网关代码改动才需要重启）。挂了 CDN 再刷一下 `/` 与 `/index.html` 两个地址即可——静态资源带内容哈希且 `immutable`，入口页一更新，客户端自然会去拉新的哈希资源。
+
+### 必须保管的东西
+
+`gateway/.data/credential.key`（未显式配置 `CREDENTIAL_KEY` 时生成）是解密已入库第三方凭据的唯一钥匙，**迁移机器必须一并复制**，丢了旧凭据就全部解不开（见下文 FAQ）。
 
 ---
 
@@ -345,6 +402,37 @@ sidecar 没启动。执行 `pnpm start:sidecar`（或直接用 `pnpm start:all` 
 **sidecar 启动报「端口已被占用」**
 已经有一个 sidecar 在跑了，或上一次没退干净：
 `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*qq_mobile_login*' } | Stop-Process -Force`
+
+**网易云上游报 `xeapi public key is missing`**
+`api-enhanced` 启动时是「先取 xeapi 公钥 → 再用它注册匿名 token」的顺序，公钥缓存在系统临时目录（Linux 即 `/tmp/xeapi_public_key`）。**全新环境第一次启动必然报一次**（文件还没生成），随后它会自己拉取并写入，第二次启动就干净了。
+
+如果反复出现，通常是**属主冲突**：有人用 root 跑过一次（文件属主变成 root），之后换 www 跑就读得到、覆盖不了。
+
+```bash
+rm -f /tmp/xeapi_public_key /tmp/anonymous_token   # 让运行用户自己重建
+ls -ld /tmp                                        # 正常应为 drwxrwxrwt
+```
+
+根治办法是**始终用同一个用户**跑上游，别 root / www 混用（`/tmp` 被系统定期清理后也会自动重建，不影响使用）。
+
+**QQ 音乐上游报 `spawn uv ENOENT`（进程根本没起来）**
+`uv` 不在 PATH——systemd / Supervisor 这类干净环境很常见，或者 uv 装在 `/root/.local/bin` 而运行用户是 www（`/root` 权限 700，穿不进去）。
+
+`pnpm start:prod` 会先探测 uv，**找不到就自动降级用 `QQMusicApi/.venv/bin/python web/run.py`**，所以运行时并不需要 uv，只在更新上游依赖时才用得上它：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # 或直接把 uv 二进制复制到 /usr/local/bin
+cd /path/to/QQMusicApi && uv sync --group web && chown -R www:www .venv
+```
+
+注意降级依赖 `.venv` 已存在，全新机器仍要先跑一次 `uv sync --group web`。
+
+**改了上游端口后网易云一直失败**
+默认端口：网易云 `3700`、QQ 音乐 `8080`、网关 `8787`、扫码 sidecar `8090`。
+`pnpm start:prod` 用环境变量 `NETEASE_PORT` 启动网易云上游，而网关侧读的是 `gateway/.env` 里的 `NETEASE_BASE_URL`——**两者必须一致**，否则网关会把请求打到没人监听的端口上（现象是所有网易云搜索/播放都失败，但进程看着都正常）。改端口时两个一起改。
+
+**收藏 / 歌单 / 播放历史里的歌手、专辑点不动**
+这三处网关是按文本存库的（只有歌手名与专辑名），没有平台 ID，所以列表里的歌手链接不可用；**正在播放的那首**会在开始播放时自动补一次单曲详情，播放页里可以正常跳转。想让列表里也能点，需要网关把 `id` / `platform` 一并存库。
 
 **想换回 SQLite / 不想用 PostgreSQL**
 网关的数据库访问集中在 `gateway/src/db/`（连接池 + 一份幂等建表 SQL），更换驱动只需改这一层。

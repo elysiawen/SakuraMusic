@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { usePlayerStore } from '@/stores/player';
-import { formatArtists } from '@/utils/format';
 import { activeLineIndex, parseLyric, type LyricLine } from '@/utils/lyric';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
@@ -77,6 +76,13 @@ function scrollToActive(index: number): void {
 
 function onUserScroll(): void {
   manualScrollUntil = Date.now() + 4000;
+}
+
+/** 收起歌词页再跳转：全屏覆盖层若原地停留，会盖住刚打开的详情页。 */
+function collapse(event?: MouseEvent): void {
+  // Ctrl / Cmd / Shift 点击是「新标签页打开」，当前页不该跟着收起
+  if (event?.metaKey || event?.ctrlKey || event?.shiftKey) return;
+  if (player.expanded) player.toggleExpanded();
 }
 
 watch(activeIndex, (index) => {
@@ -181,12 +187,36 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
           </button>
 
           <h1 class="lyric-title">{{ track.title }}</h1>
-          <!-- 专辑跟在歌手右边、以中点分隔；专辑仍保持更淡的层次，避免和歌手抢注意力 -->
+          <!--
+            歌手与专辑都可点进详情页（平台信息齐全才跳，和 TrackList 的判断一致）。
+            专辑跟在歌手右边、以中点分隔，并保持更淡的层次，避免和歌手抢注意力。
+          -->
           <p class="lyric-meta">
-            {{ formatArtists(track.artists) }}
+            <template v-if="track.artists.length === 0">未知歌手</template>
+            <template v-for="(artist, artistIndex) in track.artists" :key="`${artist.name}-${artistIndex}`">
+              <RouterLink
+                v-if="artist.id && artist.platform"
+                class="lyric-link"
+                :to="{ name: 'artist', params: { platform: artist.platform, id: artist.id } }"
+                @click="collapse"
+              >
+                {{ artist.name }}
+              </RouterLink>
+              <span v-else>{{ artist.name }}</span>
+              <span v-if="artistIndex < track.artists.length - 1" class="lyric-sep">/</span>
+            </template>
+
             <template v-if="track.album.name">
               <span class="lyric-sep">·</span>
-              <span class="lyric-album">{{ track.album.name }}</span>
+              <RouterLink
+                v-if="track.album.id && track.album.platform"
+                class="lyric-link lyric-album"
+                :to="{ name: 'album', params: { platform: track.album.platform, id: track.album.id } }"
+                @click="collapse"
+              >
+                {{ track.album.name }}
+              </RouterLink>
+              <span v-else class="lyric-album">{{ track.album.name }}</span>
             </template>
           </p>
 
@@ -469,6 +499,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-soft);
+}
+
+/* 歌手 / 专辑的可点样式：默认与原样式一致，hover 才显出可点 */
+.lyric-link {
+  color: inherit;
+  text-decoration: none;
+  transition: color 0.18s ease;
+}
+
+.lyric-link:hover {
+  color: var(--brand-600);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* 歌手与专辑同行时的中点分隔符 */

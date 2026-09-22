@@ -832,6 +832,15 @@ textarea {
   font-size: 12.5px;
 }
 
+/*
+ * 歌手 + 专辑的包裹层。桌面端靠 display: contents 把自己「透明掉」，
+ * 内部两个 .row-sub 依旧作为 .track-row 的网格项（歌手列、专辑列），两列布局不受影响；
+ * 手机端（≤480）才把它变成 flex，把两者合成「歌手 · 专辑」一行。
+ */
+.track-row .row-meta {
+  display: contents;
+}
+
 .track-row .row-actions {
   display: flex;
   align-items: center;
@@ -1471,10 +1480,55 @@ textarea {
    * 这里：砍掉序号列（当前曲目有整行高亮，序号信息量最低），
    * 按钮收到 30px，平台徽标在手机上只留图标（见下面的 .badge-label）。
    */
+  /*
+   * 曲目行排成两行：第 1 行歌名、第 2 行「歌手 · 专辑」。
+   * 歌手与专辑在桌面上是独立的两个网格列，窄屏放不下，原先在 ≤900 / ≤1180
+   * 直接被 display: none 藏掉了 —— 结果手机上根本点不到「进歌手页 / 进专辑页」的入口。
+   */
   .track-row {
     grid-template-columns: 36px minmax(0, 1fr) auto;
-    gap: 8px;
+    grid-template-rows: auto auto;
+    row-gap: 1px;
+    column-gap: 8px;
     padding: 6px;
+  }
+
+  .track-row .cover-btn {
+    grid-row: 1 / 3;
+    grid-column: 1;
+  }
+
+  .track-row .row-title {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .track-row .row-actions {
+    grid-row: 1 / 3;
+    grid-column: 3;
+    gap: 0;
+  }
+
+  /* 覆盖 ≤900 / ≤1180 的 display: none：手机上必须显示出来才点得到。 */
+  .track-row .row-meta {
+    display: flex;
+    grid-row: 2;
+    grid-column: 2;
+    min-width: 0;
+    font-size: 12px;
+  }
+
+  .track-row .row-meta .row-artist,
+  .track-row .row-meta .row-album {
+    display: block;
+    min-width: 0;
+  }
+
+  /* 专辑跟在歌手后面，中间补一个中点；专辑元素是常驻的，所以总会带上这个点。 */
+  .track-row .row-meta .row-artist:not(:last-child)::after {
+    content: '·';
+    margin: 0 5px;
+    color: var(--text-mute);
   }
 
   /*
@@ -1490,10 +1544,6 @@ textarea {
 
   .track-row .row-index {
     display: none;
-  }
-
-  .track-row .row-actions {
-    gap: 0;
   }
 
   .track-row .row-actions .icon-btn {

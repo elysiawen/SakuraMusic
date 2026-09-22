@@ -200,6 +200,48 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  /** 已补全过的歌曲详情，避免反复播放同一首时重复请求。 */
+  const metadataCache = new Map<string, UnifiedTrack>();
+
+  /**
+   * 补全歌手 / 专辑的跳转信息。
+   *
+   * 收藏、自建歌单、播放历史里的歌曲是网关按文本存的（只留歌手名与专辑名），
+   * 读回来缺少 `id` / `platform`，播放页里的歌手与专辑就退化成不可点的纯文字。
+   * 这里在播放时按需拉一次单曲详情补齐，只补不覆盖，失败也不影响播放。
+   */
+  async function enrichMetadata(track: UnifiedTrack, position: number): Promise<void> {
+    const source = track.sources[0];
+    if (!source) return;
+
+    const needArtists = track.artists.some((item) => !item.id || !item.platform);
+    const needAlbum = !track.album.id || !track.album.platform;
+    if (!needArtists && !needAlbum) return;
+
+    const cacheKey = `${source.platform}:${source.id}`;
+    let detail = metadataCache.get(cacheKey);
+    if (!detail) {
+      try {
+        detail = (await musicApi.track(source.platform, source.id)).track;
+        if (metadataCache.size > 200) metadataCache.clear();
+        metadataCache.set(cacheKey, detail);
+      } catch {
+        return; // 补全失败无关紧要，静默忽略
+      }
+    }
+
+    // 期间可能已经切歌或换了队列，确认这个下标上还是同一首才写回。
+    const target = queue.value[position];
+    if (!target || target.key !== track.key) return;
+
+    if (needArtists && detail.artists.some((item) => item.id && item.platform)) {
+      target.artists = detail.artists;
+    }
+    if (needAlbum && detail.album.id) {
+      target.album = { ...target.album, id: detail.album.id, platform: detail.album.platform };
+    }
+  }
+
   /** 真正发起播放：解析地址 → 设置 src → 播放。 */
   async function start(): Promise<void> {
     const track = current.value;
@@ -233,6 +275,9 @@ export const usePlayerStore = defineStore('player', () => {
       // 歌词与播放并行加载：即使浏览器策略或音频设备导致 play() 失败，
       // 用户依然可以打开歌词页查看歌词。
       void loadLyric(track, source);
+
+      // 同上，补全歌手/专辑的跳转信息也不阻塞播放。
+      void enrichMetadata(track, index.value);
 
       await element.play();
       playing.value = true;

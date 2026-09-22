@@ -1,14 +1,21 @@
+<script lang="ts">
+import type { SearchResult } from '@/api/types';
+
+/**
+ * 搜索结果缓存，刻意放在模块作用域。
+ * `<script setup>` 里声明的变量会随组件卸载一起销毁，而我们需要
+ * 「搜索 → 进歌手页 → 返回」时结果还在：否则返回要重新请求一遍，
+ * 列表闪一下才回来，App.vue 那边的滚动位置还原也就跟着抖动。
+ */
+const resultCache = new Map<string, SearchResult>();
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { libraryApi, musicApi } from '@/api';
-import {
-  PLATFORM_LABEL,
-  type Platform,
-  type Playlist,
-  type SearchResult,
-  type SearchType,
-} from '@/api/types';
+// SearchResult 已在上面的普通 <script> 块里导入（两块共享同一模块作用域）
+import { PLATFORM_LABEL, type Platform, type Playlist, type SearchType } from '@/api/types';
 import AlbumCard from '@/components/AlbumCard.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import ArtistCard from '@/components/ArtistCard.vue';
@@ -42,10 +49,21 @@ const result = ref<SearchResult | null>(null);
 const loading = ref(false);
 const createOpen = ref(false);
 const keyword = ref(String(route.query.q ?? ''));
-const page = ref(1);
-const activeType = ref<SearchType>('song');
-/** 每种类型各自缓存，来回切页签不必重复请求。 */
-const cache = new Map<string, SearchResult>();
+
+/*
+ * 页签与页码直接以 URL 查询串为准，而不是组件内的 ref。
+ * 组件在离开路由时会被销毁、ref 回到默认值 —— 那样「搜到第 2 页 → 点进歌手 → 返回」
+ * 就会掉回第 1 页，页签也退回「单曲」。放进 URL 后，后退栈里存的就是完整状态。
+ */
+const activeType = computed<SearchType>(() => {
+  const value = String(route.query.type ?? '');
+  return TABS.some((tab) => tab.value === value) ? (value as SearchType) : 'song';
+});
+
+const page = computed(() => {
+  const value = Number(route.query.page ?? 1);
+  return Number.isFinite(value) && value > 1 ? Math.floor(value) : 1;
+});
 
 const failedPlatforms = computed(() => (result.value?.platforms ?? []).filter((item) => !item.ok));
 
@@ -69,8 +87,9 @@ async function run(): Promise<void> {
     return;
   }
 
+  // 每种类型、每一页各自缓存，来回切页签 / 返回上一页都不必重复请求。
   const key = `${query}|${activeType.value}|${page.value}`;
-  const cached = cache.get(key);
+  const cached = resultCache.get(key);
   if (cached) {
     result.value = cached;
     return;
@@ -79,7 +98,7 @@ async function run(): Promise<void> {
   loading.value = true;
   try {
     const data = await musicApi.search(query, activeType.value, page.value, 20);
-    cache.set(key, data);
+    resultCache.set(key, data);
     result.value = data;
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '搜索失败');
@@ -90,22 +109,49 @@ async function run(): Promise<void> {
 }
 
 watch(
-  () => route.query.q,
-  (value) => {
-    keyword.value = String(value ?? '');
-    page.value = 1;
-    // 换了关键词，之前的缓存全部作废。
-    cache.clear();
+  // 拼成字符串：q / type / page 任意一个变化都要重新取数，
+  // 直接 watch 数组的话每次求值都是新引用，会多触发一轮。
+  () => `${route.query.q ?? ''}|${route.query.type ?? 'song'}|${route.query.page ?? 1}`,
+  () => {
+    const next = String(route.query.q ?? '');
+    keyword.value = next;
+    /*
+     * 只作废「其它关键词」的缓存。整表清空的话，
+     * 「搜索 → 进歌手页 → 返回」会把刚看过的结果丢掉、重新请求一遍。
+     */
+    for (const key of [...resultCache.keys()]) {
+      if (!key.startsWith(`${next}|`)) resultCache.delete(key);
+    }
     void run();
   },
   { immediate: true },
 );
 
+/**
+ * 页签与页码写回 URL。用 replace 而不是 push：不往后退栈里塞条目，
+ * 这样「点进详情页再返回」回到的就是带着正确页码的那一条历史记录。
+ */
+function syncQuery(next: { type?: SearchType; page?: number }): void {
+  const query: LocationQueryRaw = { ...route.query };
+
+  if (next.type !== undefined) {
+    // song 是默认页签，不写进 URL，链接更干净
+    if (next.type === 'song') delete query.type;
+    else query.type = next.type;
+    delete query.page; // 换页签回到第一页
+  }
+
+  if (next.page !== undefined) {
+    if (next.page <= 1) delete query.page;
+    else query.page = String(next.page);
+  }
+
+  void router.replace({ query });
+}
+
 function switchType(type: SearchType): void {
   if (type === activeType.value) return;
-  activeType.value = type;
-  page.value = 1;
-  void run();
+  syncQuery({ type });
 }
 
 function searchAgain(): void {
@@ -115,8 +161,7 @@ function searchAgain(): void {
 }
 
 function changePage(next: number): void {
-  page.value = next;
-  void run();
+  syncQuery({ page: next });
 }
 
 /** 在弹窗里确认名称后，把当前页的前 50 首写进去。 */
