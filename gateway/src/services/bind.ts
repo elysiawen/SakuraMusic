@@ -133,7 +133,8 @@ export async function pollBind(
   // 手机端扫码的状态由 sidecar 通过 MQTT 持续接收，这里只是读它内存里的最新事件。
   const result = type === 'mobile' ? await qq.mobileQrCheck(identifier) : await qq.qrCheck(identifier, type);
   if (result.status !== 'success' || !result.credential) {
-    return { platform, status: result.status };
+    // message 要一并透传，否则手机端扫码的后台异常会被前端当成「还在等待」。
+    return { platform, status: result.status, message: result.message };
   }
 
   const cookie = qq.buildQqCookie(result.credential);

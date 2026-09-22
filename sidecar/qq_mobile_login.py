@@ -73,6 +73,8 @@ _EVENT_CODES = {
     QRCodeLoginEvents.TIMEOUT: 3,
     QRCodeLoginEvents.REFUSE: 4,
 }
+# 与网关 QR_EVENT_STATUS 约定的统一事件码：其他 = -1（网关据此判定为 error）。
+EVENT_ERROR = -1
 
 
 @dataclass
@@ -142,7 +144,7 @@ async def _consume_login(session: MobileSession) -> None:
 
             async for item in flow.iter_events():
                 with session.lock:
-                    session.event = _EVENT_CODES.get(item.event, -1)
+                    session.event = _EVENT_CODES.get(item.event, EVENT_ERROR)
                     if item.credential is not None:
                         # 与上游 Web 层保持一致的别名序列化，网关侧的 Cookie 构造逻辑可直接复用。
                         session.credential = item.credential.model_dump(by_alias=True)
@@ -154,6 +156,9 @@ async def _consume_login(session: MobileSession) -> None:
     except Exception as exc:  # noqa: BLE001 - 任何异常都要回传给调用方而不是静默失败
         with session.lock:
             session.error = f"{type(exc).__name__}: {exc}"
+            # 必须把事件一并打到 -1：网关只按 event 判定状态，若只设 error/done，
+            # 异常会表现为「一直停在已扫描」，用户端看不到任何错误信息。
+            session.event = EVENT_ERROR
             session.done = True
             session.expires_at = time.time() + SESSION_IDLE_TTL
     finally:

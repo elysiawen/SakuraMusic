@@ -578,6 +578,8 @@ export type QqQrStatus = 'waiting' | 'scanned' | 'confirmed' | 'success' | 'expi
 export interface QqQrCheckResult {
   status: QqQrStatus;
   credential: Record<string, unknown> | null;
+  /** 出错时的原因，透传到前端展示（手机端扫码的后台异常靠它才能被看到）。 */
+  message?: string;
 }
 
 /**
@@ -677,6 +679,14 @@ export async function mobileQrCheck(identifier: string): Promise<QqQrCheckResult
   );
   const status = QR_EVENT_STATUS[num(data.event)] ?? 'waiting';
   const credential = status === 'success' ? asObj(data.credential) : null;
+
+  // sidecar 只在后台消费失败时写 message；此时必须优先报错，
+  // 否则（旧行为）事件会停在最后一帧，前端永远显示「已扫描，请在手机上确认登录」。
+  const message = str(data.message);
+  if (message && status !== 'success') {
+    return { status: 'error', credential: null, message };
+  }
+
   return {
     status,
     credential: credential && Object.keys(credential).length > 0 ? credential : null,
