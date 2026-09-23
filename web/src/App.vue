@@ -11,11 +11,13 @@ import QrBindDialog from '@/components/QrBindDialog.vue';
 import SakuraPetals from '@/components/SakuraPetals.vue';
 import ToastHost from '@/components/ToastHost.vue';
 import { useAuthStore } from '@/stores/auth';
+import { useConnectStore } from '@/stores/connect';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
 
 const route = useRoute();
 const auth = useAuthStore();
+const connect = useConnectStore();
 const credentials = useCredentialStore();
 const library = useLibraryStore();
 
@@ -37,7 +39,12 @@ onMounted(async () => {
 watch(
   () => auth.isAuthenticated,
   (authenticated) => {
-    if (!authenticated) return;
+    if (!authenticated) {
+      // 设备长连接跟着登录态走：未登录时建立只会拿到 401，白试一次。
+      connect.stop();
+      return;
+    }
+    connect.start();
     void Promise.all([credentials.refreshLists(), library.loadAll()]);
   },
   { immediate: true },

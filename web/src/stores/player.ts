@@ -355,6 +355,26 @@ export const usePlayerStore = defineStore('player', () => {
     await start();
   }
 
+  /**
+   * 开始 / 继续播放。
+   *
+   * 远程控制指令走这两个方法而不是 `toggle()`：指令说的是「播放」，
+   * 而不是「把状态取反」——万一两端状态稍有错位，取反会做出相反的事。
+   */
+  function play(): void {
+    const element = ensureAudio();
+    if (!element.src) {
+      void start();
+      return;
+    }
+    if (element.paused) void element.play();
+  }
+
+  function pause(): void {
+    const element = ensureAudio();
+    if (!element.paused) element.pause();
+  }
+
   function toggle(): void {
     const element = ensureAudio();
     if (!element.src) {
@@ -544,6 +564,8 @@ export const usePlayerStore = defineStore('player', () => {
     next,
     prev,
     toggle,
+    play,
+    pause,
     seek,
     seekByRatio,
     setVolume,

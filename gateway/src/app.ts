@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { config } from './config';
 import { ApiError } from './lib/errors';
 import { registerAuthRoutes } from './routes/auth';
+import { registerConnectRoutes } from './routes/connect';
 import { registerCredentialRoutes } from './routes/credentials';
 import { registerLibraryRoutes } from './routes/library';
 import { registerMusicRoutes } from './routes/music';
@@ -93,6 +94,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await registerMusicRoutes(app);
   await registerLibraryRoutes(app);
   await registerStreamRoutes(app);
+  await registerConnectRoutes(app);
 
   return app;
 }

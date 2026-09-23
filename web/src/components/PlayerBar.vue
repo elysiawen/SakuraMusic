@@ -3,6 +3,7 @@ import { usePlayerStore } from '@/stores/player';
 import { formatArtists } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
+import DevicePicker from './DevicePicker.vue';
 import LikeButton from './LikeButton.vue';
 import PlayModePicker from './PlayModePicker.vue';
 import ProgressBar from './ProgressBar.vue';
@@ -97,6 +98,8 @@ const player = usePlayerStore();
         <QualityPicker />
 
         <QueueButton />
+
+        <DevicePicker />
 
       </div>
     </div>

@@ -36,6 +36,9 @@
 > sidecar 直接 `import qqmusic_api` 复用官方 SDK，因此 **QQMusicApi 仓库保持零改动**；
 > 它只在用户选择「QQ音乐扫码」时才被调用，其余功能全部走 QQMusicApi 的 Web 服务。
 
+> 多设备之间不直连：各客户端的播放状态与控制指令都经网关中转（`/api/connect/*`，一条 SSE 长连接），
+> 音频仍由真正出声的那台设备自己取 —— 遥控端不承担任何音频流量。完整协议见 `docs/connect-protocol.md`。
+
 ### 凭据是如何工作的（核心设计）
 
 两个上游都支持**按请求注入凭据**，这是整个方案的基础：
@@ -69,6 +72,8 @@ sakura-music/
 │  │  └─ routes/            HTTP 路由
 ├─ web/                     Vue 3 + Vite 前端（毛玻璃 + 6 套配色，默认深海蓝，浅色/暗色）
 ├─ sidecar/                 QQ 音乐 App 扫码服务（Python，复用 QQMusicApi 的 venv）
+├─ docs/
+│  └─ connect-protocol.md   多设备播放协议（供 Android / Windows 等客户端对接）
 ├─ scripts/
 │  ├─ bootstrap.mjs         首次准备：克隆上游、装依赖、生成 gateway/.env、建表
 │  ├─ start-all.mjs         开发模式一键拉起 5 个进程（前端跑 Vite dev server）
@@ -193,6 +198,7 @@ pnpm dev:web           # 终端 5  前端
 | 凭据管理 | 双平台扫码登录（QQ 音乐支持 **手机 QQ / 微信 / QQ 音乐 App** 三种码）、强制选择存储位置、查看状态、刷新、解绑 |
 | 聚合搜索 | 两个平台并发搜索 → 标题+歌手归一化去重 → 相关性排序，同一首歌带多个 `sources`；页签与页码写入 URL，点进详情再返回仍停在原处 |
 | 播放 | 底部播放条（进度拖动、音量、上下首、列表/单曲/不循环、随机）、音质切换、**手动切源**、断点续传的 Range 代理 |
+| 多设备 | 同账号设备互相可见（一条 SSE 长连接）、互相遥控播放 / 暂停 / 切歌 / 拖进度，也可把播放队列连进度一起搬到另一台设备继续；设备状态只在内存里，不落库 |
 | 歌词 | LRC 解析、翻译/罗马音合并、逐行滚动、点击跳转、全屏歌词页（歌手与专辑可直接点进详情页） |
 | 音乐库 | 本地歌单增删改、收藏、播放历史（自动合并 5 分钟内的重复播放） |
 | 发现 | 网易云每日推荐 / 私人 FM / 榜单，QQ 猜你喜欢 / 新歌速递 / 热门歌单 / 排行榜 |
@@ -254,6 +260,16 @@ pnpm dev:web           # 终端 5  前端
 | DELETE | `/api/playlists/:id/tracks/:platform/:trackId` | 移除歌曲 |
 | GET/POST | `/api/favorites` | 收藏列表 / 收藏或取消 |
 | GET/POST/DELETE | `/api/history` | 历史列表 / 记录 / 清空 |
+
+**多设备**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/connect/events` | 设备长连接（SSE），建立即上线、断开即下线 |
+| POST | `/api/connect/state` | 上报本机播放状态 |
+| POST | `/api/connect/command` | 控制其它设备（或把播放搬过去） |
+
+> 字段、事件、接管时序等细节见 `docs/connect-protocol.md`。
 
 </details>
 

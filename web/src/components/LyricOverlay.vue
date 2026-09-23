@@ -4,6 +4,7 @@ import { usePlayerStore } from '@/stores/player';
 import { activeLineIndex, parseLyric, type LyricLine } from '@/utils/lyric';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
+import DevicePicker from './DevicePicker.vue';
 import LikeButton from './LikeButton.vue';
 import PlayModePicker from './PlayModePicker.vue';
 import ProgressBar from './ProgressBar.vue';
@@ -176,6 +177,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
         <div class="lyric-actions">
           <LikeButton :size="18" />
           <QueueButton placement="down" :size="18" />
+          <!--
+            设备按钮放在最右：它的面板朝左展开，贴着屏幕右边缘才不会被裁掉左侧。
+            顺序与播放条上的 [队列][设备] 保持一致。
+          -->
+          <DevicePicker placement="down" :size="18" />
         </div>
       </header>
 
