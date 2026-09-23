@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { usePlayerStore } from '@/stores/player';
 import { formatArtists } from '@/utils/format';
+import AddToPlaylistDialog from './AddToPlaylistDialog.vue';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
 import DevicePicker from './DevicePicker.vue';
@@ -13,6 +15,8 @@ import SourcePicker from './SourcePicker.vue';
 import VolumeControl from './VolumeControl.vue';
 
 const player = usePlayerStore();
+/** 「添加到歌单」弹窗。 */
+const addOpen = ref(false);
 </script>
 
 <template>
@@ -47,6 +51,9 @@ const player = usePlayerStore();
             </span>
           </div>
           <LikeButton />
+          <button class="icon-btn" type="button" title="添加到歌单" @click="addOpen = true">
+            <AppIcon name="list-plus" :size="17" />
+          </button>
         </template>
         <div v-else class="stack" style="gap: 2px">
           <strong>还没有播放音乐</strong>
@@ -84,6 +91,22 @@ const player = usePlayerStore();
       <!-- 右侧：音源、音质、播放队列 -->
       <div class="row player-right" style="justify-content: flex-end; gap: 10px; min-width: 0">
         <div v-if="player.current" class="row" style="gap: 6px">
+          <!--
+            音频字节实际走的是哪条路：CDN 直连（不占服务器带宽）还是经网关中转。
+            有当前曲目就显示，不额外等「开始取流」——Web 端浏览器禁止设置 Referer，
+            直连基本必然被 CDN 拒绝，所以这里写「中转」不会是错的。
+          -->
+          <span
+            class="tag"
+            style="color: var(--text-soft)"
+            :title="
+              player.usingDirect
+                ? '音频直接从平台 CDN 取流，不经网关'
+                : '直连不可用，音频经网关转发（占用服务器带宽）'
+            "
+          >
+            {{ player.usingDirect ? 'CDN' : '中转' }}
+          </span>
           <SourcePicker />
           <span
             v-if="player.trial"
@@ -104,6 +127,9 @@ const player = usePlayerStore();
       </div>
     </div>
   </div>
+
+  <!-- 弹窗内部 Teleport 到 body，放在这里只是为了跟着播放条的生命周期走 -->
+  <AddToPlaylistDialog :visible="addOpen" :track="player.current" @close="addOpen = false" />
 </template>
 
 <style scoped>

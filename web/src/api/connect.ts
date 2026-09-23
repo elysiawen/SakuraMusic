@@ -1,8 +1,17 @@
 import { apiRequest } from './client';
+import type { Platform } from './types';
 
 export type ConnectDeviceKind = 'web' | 'android' | 'windows';
 
-/** 曲目摘要：只有展示需要的字段，与网关的 TrackSnapshot 一一对应。 */
+/** 曲目的取流坐标：跟随播放时要用它去解析音频地址。 */
+export interface ConnectTrackSource {
+  platform: Platform;
+  id: string;
+  mid?: string;
+  numericId?: string;
+}
+
+/** 曲目摘要：只有展示与取流需要的字段，与网关的 TrackSnapshot 一一对应。 */
 export interface ConnectTrackSnapshot {
   key: string;
   title: string;
@@ -10,6 +19,7 @@ export interface ConnectTrackSnapshot {
   album: string;
   cover: string | null;
   durationMs: number;
+  sources: ConnectTrackSource[];
 }
 
 export interface ConnectPlaybackState {
@@ -23,6 +33,8 @@ export interface ConnectPlaybackState {
   volume: number;
   quality: string;
   queueLength: number;
+  /** 这台设备正在跟随谁（对端 deviceId）。用来让「谁跟着谁」互相可见。 */
+  following?: string;
 }
 
 /** 上报时不带 positionAt——它由服务端盖章，避免各设备时钟不一致把进度带偏。 */
@@ -43,6 +55,12 @@ export type ConnectAction =
   | 'next'
   | 'prev'
   | 'seek'
+  /** 调音量（0~1）。音量跟着设备走，不跟着播放内容走。 */
+  | 'volume'
+  /** 让目标设备跟随发起方播放（「你跟着我」那一半；本地跟随不需要走协议）。 */
+  | 'follow'
+  /** 撤销上一条：请目标设备停止跟随发起方。 */
+  | 'unfollow'
   /** 接管播放：带上队列与进度交过去，既是「投放」也是「搬回来」。 */
   | 'transfer'
   /** 对方要接管：把队列交出去并停下自己。 */
@@ -53,6 +71,7 @@ export interface ConnectCommandPayload {
   queue?: unknown[];
   index?: number;
   position?: number;
+  volume?: number;
 }
 
 export const connectApi = {

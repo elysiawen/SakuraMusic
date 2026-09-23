@@ -29,6 +29,12 @@ const DRIFT_THRESHOLD_S = 1.5;
 const DRIFT_COOLDOWN_MS = 5_000;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
+/** 跟随时偏差超过这个秒数就直接 seek —— 靠速率微调追要等几十秒。 */
+const SYNC_SEEK_S = 3;
+/** 偏差超过这个秒数就开始用速率微调。 */
+const SYNC_TRIM_S = 0.15;
+/** 速率微调的幅度：±5%。听感上几乎察觉不到，但每秒能追回 50 毫秒。 */
+const TRIM_RATE = 0.05;
 
 const NAME_MAX = 40;
 
@@ -121,11 +127,12 @@ function readEvent<T>(event: Event): T | null {
  * 上报是 5 秒一次的，控制端照搬那个数字会一跳一跳；用服务端盖章的 positionAt
  * 加上本地流逝的时间，进度条就能连续走——代价是两端的时钟差，秒级误差可接受。
  */
-export function livePosition(state: ConnectPlaybackState | null): number {
+export function livePosition(state: ConnectPlaybackState | null, clockOffsetMs = 0): number {
   if (!state) return 0;
   if (!state.playing) return state.position;
 
-  const elapsed = (Date.now() - state.positionAt) / 1000;
+  // 用校正过的「服务端时间」去减服务端盖的 positionAt，避开两台机器的时钟差。
+  const elapsed = (Date.now() + clockOffsetMs - state.positionAt) / 1000;
   const position = Math.max(0, state.position + elapsed);
   // 掐上界：没有周期上报之后，控制端可能独自推算很久，播完那一刻会越过曲长。
   return state.duration > 0 ? Math.min(position, state.duration) : position;
@@ -177,6 +184,8 @@ export const useConnectStore = defineStore('connect', () => {
             album: track.album.name,
             cover: track.album.cover ?? null,
             durationMs: track.durationMs,
+            // 取流坐标必须带上：别的设备要靠它才能把这首放出来（跟随播放）。
+            sources: track.sources,
           }
         : null,
       playing: player.playing,
@@ -186,6 +195,8 @@ export const useConnectStore = defineStore('connect', () => {
       volume: player.volume,
       quality: player.quality,
       queueLength: player.queue.length,
+      // 让别的设备看得到「本机在跟着谁」，被跟随的一方才能确认对方跟上了。
+      following: following.value ?? undefined,
     };
   }
 
@@ -221,7 +232,15 @@ export const useConnectStore = defineStore('connect', () => {
      * 刻意不监听 currentTime——它每 250ms 变一次，会让上报变成持续的小流量。
      */
     stopStateWatch = watch(
-      () => [player.playing, player.current?.key ?? '', player.index, player.queue.length].join('|'),
+      () =>
+        [
+          player.playing,
+          player.current?.key ?? '',
+          player.index,
+          player.queue.length,
+          // 跟随关系一变也要立刻广播：对方正是靠它来确认「你已经在跟着我了」。
+          following.value ?? '',
+        ].join('|'),
       () => void report(),
     );
 
@@ -264,8 +283,23 @@ export const useConnectStore = defineStore('connect', () => {
     void report();
   }
 
-  function applyDevices(payload: { devices?: ConnectDevice[] } | null): void {
+  /**
+   * 本机时钟与服务端时钟的差值（毫秒）。每次收到带 serverNow 的事件就刷新一次。
+   *
+   * 不校正的话，推算出的进度会整体偏移「两机时钟差」那么多，而且永远不会自愈 ——
+   * 跟随播放时表现为「怎么调都差着几秒」。
+   */
+  let clockOffsetMs = 0;
+
+  function applyDevices(payload: { devices?: ConnectDevice[]; serverNow?: number } | null): void {
     devices.value = Array.isArray(payload?.devices) ? payload.devices : [];
+    // 这个差值里含着单程网络延迟（通常几十毫秒），可以忽略。
+    if (typeof payload?.serverNow === 'number') clockOffsetMs = payload.serverNow - Date.now();
+  }
+
+  /** 把某台设备上报的进度推算到「现在」，已校正时钟差。 */
+  function positionOf(state: ConnectPlaybackState | null): number {
+    return livePosition(state, clockOffsetMs);
   }
 
   /** 建立设备长连接。重复调用无副作用。 */
@@ -300,6 +334,8 @@ export const useConnectStore = defineStore('connect', () => {
 
     stream.addEventListener('devices', (event) => {
       applyDevices(readEvent<{ devices?: ConnectDevice[] }>(event));
+      // 跟随中：每收到一份新状态就比对一次（只有不一致才会动手，见 syncToLeader）。
+      void syncToLeader();
     });
 
     stream.addEventListener('command', (event) => {
@@ -323,6 +359,9 @@ export const useConnectStore = defineStore('connect', () => {
     for (const timer of ackTimers) window.clearTimeout(timer);
     ackTimers.clear();
     baseline = null;
+    following.value = null;
+    // 同理：断开时把追赶速率复位，免得下次播放莫名其妙快/慢几个百分点。
+    usePlayerStore().setPlaybackRate(1);
 
     stopStateWatch?.();
     stopStateWatch = null;
@@ -431,12 +470,160 @@ export const useConnectStore = defineStore('connect', () => {
           if (Number.isFinite(position)) player.seek(position);
           break;
         }
+
+        case 'volume': {
+          const volume = Number(data.volume);
+          if (Number.isFinite(volume)) player.setVolume(volume);
+          break;
+        }
+
+        case 'follow': {
+          // 对端请本机跟随它：收件人就是发起方。
+          if (!from) break;
+          following.value = from;
+          const name = devices.value.find((item) => item.deviceId === from)?.name ?? '对方';
+          toast.info(`已跟随「${name}」播放`);
+          break;
+        }
+
+        case 'unfollow':
+          // 对方撤回了请求。只清「跟着它」这一种，避免误伤本机自己设的跟随对象。
+          if (from && following.value !== from) break;
+          following.value = null;
+          break;
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '远程指令执行失败');
     } finally {
       void report();
     }
+  }
+
+  /**
+   * 正在跟随的设备 id。
+   *
+   * 跟随 = 本机把自己当成那台设备的镜像输出：曲目、播放态、进度都跟着走。
+   * 不需要网关参与 —— 目标设备的状态本来就会广播过来，本机照着对就是了。
+   */
+  const following = ref<string | null>(null);
+  /** 换歌过程中别再被下一轮广播打断（切换曲目本身又会触发一轮广播）。 */
+  let syncing = false;
+
+  /**
+   * 跟上目标设备的进度。
+   *
+   * 由 devices 广播驱动：每收到一份新状态就比对一次，不一致才动手。
+   * 所以它是收敛的 —— 本机同步完自己也会上报，下一轮比对就一致了，不会来回弹。
+   *
+   * 两端各自缓冲、各自解码，偏差只能靠 seek 收拾，阈值因此放宽到秒级：
+   * 频繁 seek 带来的卡顿，比差个一两秒难受得多。
+   */
+  async function syncToLeader(): Promise<void> {
+    const target = following.value;
+    if (!target || syncing) return;
+
+    const player = usePlayerStore();
+    const leader = devices.value.find((item) => item.deviceId === target);
+
+    // 目标下线了：跟随没有意义了，自动收手。
+    if (!leader) {
+      following.value = null;
+      toast.info('跟随的设备已离线，已停止同步');
+      return;
+    }
+
+    const state = leader.state;
+    if (!state?.track) return;
+
+    // 曲目不同：换歌。摘要里的歌手是拼好的字符串，还原成单条歌手即可（不影响播放）。
+    if (state.track.key !== (player.current?.key ?? '')) {
+      if (state.track.sources.length === 0) return;
+      syncing = true;
+      try {
+        await player.playTrack({
+          key: state.track.key,
+          title: state.track.title,
+          artists: [{ name: state.track.artists }],
+          album: { name: state.track.album, cover: state.track.cover ?? undefined },
+          durationMs: state.track.durationMs,
+          sources: state.track.sources,
+        });
+        const at = positionOf(state);
+        if (at > 0.5) player.seek(at);
+        if (!state.playing) player.pause();
+      } catch {
+        // 取流失败（版权限制、对方没绑账号等）：放弃这一轮，下次广播还会再试。
+      } finally {
+        syncing = false;
+      }
+      return;
+    }
+
+    // 同一首歌：先对齐播放态，再收拾进度偏差。
+    if (state.playing && !player.playing) player.play();
+    else if (!state.playing && player.playing) player.pause();
+
+    const expected = positionOf(state);
+    const drift = player.currentTime - expected;
+
+    if (Math.abs(drift) > SYNC_SEEK_S) {
+      // 差太多：直接跳过去，靠微调要追几十秒。
+      player.seek(expected);
+      player.setPlaybackRate(1);
+    } else if (Math.abs(drift) > SYNC_TRIM_S) {
+      // 差得不多：用一点点速率差慢慢追。听不出来，也不会卡。
+      player.setPlaybackRate(drift > 0 ? 1 - TRIM_RATE : 1 + TRIM_RATE);
+    } else {
+      player.setPlaybackRate(1);
+    }
+  }
+
+  /**
+   * 跟随某台设备播放。
+   *
+   * 是只读镜像：跟随期间本机的传输控制不会转发给对方（想自己控制就先停止跟随）。
+   * 这样不必去拦播放条上的每一个按钮，语义也更清楚。
+   */
+  function follow(device: ConnectDevice): void {
+    if (device.deviceId === deviceId.value) return;
+    /*
+     * 防循环：对方正在跟随本机的话，先请它停止。
+     *
+     * 双向互跟没有意义 —— 两边都是镜像、谁都没有权威，有偏差时只会互相拉扯；
+     * 而且面板上「跟随它」和「跟随我」会同时点亮，看起来就像个 bug。
+     */
+    if (device.state?.following === deviceId.value) void control(device.deviceId, 'unfollow');
+    following.value = device.deviceId;
+    toast.success(`已跟随「${device.name}」播放`);
+    void syncToLeader();
+  }
+
+  function stopFollowing(): void {
+    if (!following.value) return;
+    following.value = null;
+    // 别把追赶用的速率留在身上。
+    usePlayerStore().setPlaybackRate(1);
+    toast.info('已停止跟随');
+  }
+
+  /**
+   * 请对方跟随本机播放 —— 与 follow() 相反的那个方向。
+   *
+   * 本机只把意图发出去，真正把自己设成跟随者的还是对方：它会写在自己的 following 里，
+   * 随下一次状态上报带回来。所以这个方向不需要本机维护任何状态。
+   */
+  async function requestFollow(device: ConnectDevice): Promise<void> {
+    /*
+     * 防循环：本机正在跟随对方的话，先停掉 —— 对方要镜像的是本机的状态，
+     * 本机不能同时又镜像对方，否则两边互相拉扯。
+     */
+    if (following.value === device.deviceId) stopFollowing();
+    await control(device.deviceId, 'follow');
+  }
+
+  /** 请对方停止跟随本机。 */
+  async function cancelFollow(device: ConnectDevice): Promise<void> {
+    await control(device.deviceId, 'unfollow');
   }
 
   /**
@@ -475,6 +662,14 @@ export const useConnectStore = defineStore('connect', () => {
     report,
     control,
     takeOver,
+    /** 正在跟随的设备 id（null = 没在跟随）。 */
+    following,
+    follow,
+    stopFollowing,
+    requestFollow,
+    cancelFollow,
+    /** 已校正时钟差的进度推算：界面显示远端进度一律用它。 */
+    positionOf,
     rename,
   };
 });

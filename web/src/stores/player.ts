@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { musicApi } from '@/api';
 import type { LyricResult } from '@/api/types';
 import type { Platform, Quality, TrackSource, UnifiedTrack } from '@/api/types';
@@ -18,9 +18,31 @@ interface PersistedPlayerState {
   preferredPlatform: Platform | null;
   /** 直连失败过的平台：这些平台后续直接走网关代理，不再重试直连。 */
   proxyOnly?: Platform[];
+  /** 上次的播放现场：队列、听到第几首、听到哪儿了（秒）。 */
+  queue?: UnifiedTrack[];
+  index?: number;
+  position?: number;
 }
 
 const STORAGE_KEY = 'sakura.player';
+/** 落盘保留的队列上限（Android 端的 PlaybackSessionStore 用的是同一个数）。 */
+const MAX_PERSISTED_QUEUE = 200;
+
+/**
+ * 队列太长时只留当前曲目附近的一段。
+ *
+ * 与 Android 端同样的取舍：偏好里塞几百首歌会让每次启动的解析变慢，
+ * 而真正要「续上」的只有当前这一首和它前后的邻居。直接砍掉尾部会把正在听的
+ * 那首一起砍掉，所以按当前下标取窗口。
+ */
+function capQueue(queue: UnifiedTrack[], index: number): { queue: UnifiedTrack[]; index: number } {
+  if (queue.length <= MAX_PERSISTED_QUEUE) return { queue, index };
+
+  const at = Math.min(Math.max(0, index), queue.length - 1);
+  const half = Math.floor(MAX_PERSISTED_QUEUE / 2);
+  const start = Math.min(Math.max(0, at - half), queue.length - MAX_PERSISTED_QUEUE);
+  return { queue: queue.slice(start, start + MAX_PERSISTED_QUEUE), index: at - start };
+}
 
 function loadPersisted(): Partial<PersistedPlayerState> {
   try {
@@ -78,7 +100,41 @@ export const usePlayerStore = defineStore('player', () => {
   const progress = computed(() => (duration.value > 0 ? currentTime.value / duration.value : 0));
   const hasNext = computed(() => queue.value.length > 1);
 
+  /*
+   * 恢复上次的播放现场。
+   *
+   * 只把队列与位置摆好，**不自动出声**：浏览器会拦截自动播放，用户多半也不希望
+   * 一进页面就被吵。界面显示「那首歌 + 停在原处的进度」，点一下播放就从那儿续上
+   * （见 start() 里对 currentTime 的处理）。
+   */
+  if (Array.isArray(persisted.queue) && persisted.queue.length > 0) {
+    queue.value = persisted.queue;
+    index.value =
+      typeof persisted.index === 'number' && persisted.index >= 0 && persisted.index < persisted.queue.length
+        ? persisted.index
+        : 0;
+    currentTime.value = typeof persisted.position === 'number' && persisted.position > 0 ? persisted.position : 0;
+    // 音频元数据还没加载，先用曲目自带时长把进度条撑住，免得显示成 0:00。
+    const restored = queue.value[index.value];
+    if (restored) duration.value = restored.durationMs / 1000;
+  }
+
+  /**
+   * 进度在播放中每 250ms 变一次，不能跟着写盘 —— 攒一会儿再落一次。
+   * 队列与切歌这些不频繁的变化走下面的 watch，立刻写。
+   */
+  let persistTimer: number | undefined;
+
+  function persistSoon(): void {
+    if (persistTimer !== undefined) return;
+    persistTimer = window.setTimeout(() => {
+      persistTimer = undefined;
+      persist();
+    }, 2_000);
+  }
+
   function persist(): void {
+    const capped = capQueue(queue.value, index.value);
     const state: PersistedPlayerState = {
       volume: volume.value,
       quality: quality.value,
@@ -86,9 +142,28 @@ export const usePlayerStore = defineStore('player', () => {
       shuffle: shuffle.value,
       preferredPlatform: preferredPlatform.value,
       proxyOnly: proxyOnly.value,
+      queue: capped.queue,
+      index: capped.index,
+      position: currentTime.value,
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // 存储被禁用或写满（队列是最大的一块）：退化成只留偏好，别让播放本身受影响。
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, queue: undefined }));
+      } catch {
+        // 连偏好都写不进去就算了。
+      }
+    }
   }
+
+  // 队列或当前曲目一变就立刻落盘：这些变化不频繁，而丢了就「续不上」了。
+  watch(
+    () => [queue.value, index.value] as const,
+    () => persist(),
+  );
 
   /** 记下「这个平台直连不通」，后续直接走代理。 */
   function rememberProxyOnly(platform: Platform): void {
@@ -118,6 +193,8 @@ export const usePlayerStore = defineStore('player', () => {
 
     element.addEventListener('timeupdate', () => {
       currentTime.value = element.currentTime;
+      // 这个事件每 250ms 就来一次：攒着写盘，别让 localStorage 跟着这个频率抖。
+      persistSoon();
     });
     element.addEventListener('loadedmetadata', () => {
       duration.value = Number.isFinite(element.duration) ? element.duration : 0;
@@ -272,6 +349,15 @@ export const usePlayerStore = defineStore('player', () => {
       element.muted = muted.value;
       trial.value = result.trial;
 
+      /*
+       * 续播上次听到的位置。
+       *
+       * 设置 src 之后立刻写 currentTime 是允许的：此时 readyState 还是 HAVE_NOTHING，
+       * 浏览器会把它记成「默认起播位置」，等数据到位后再跳过去。
+       * 正常播放路径上 currentTime 已被调用方重置为 0，所以这里只有「恢复上次现场」会命中。
+       */
+      if (currentTime.value > 0.5) element.currentTime = currentTime.value;
+
       // 歌词与播放并行加载：即使浏览器策略或音频设备导致 play() 失败，
       // 用户依然可以打开歌词页查看歌词。
       void loadLyric(track, source);
@@ -407,6 +493,18 @@ export const usePlayerStore = defineStore('player', () => {
   function toggleMute(): void {
     muted.value = !muted.value;
     ensureAudio().muted = muted.value;
+  }
+
+  /**
+   * 微调播放速率，专供「跟随同步」用。
+   *
+   * 偏差不大时用 1±0.05 的速率差慢慢追：听感上几乎察觉不到，也不必 seek ——
+   * 而 seek 要重新缓冲，会明显卡一下。偏差偏大时调用方会直接 seek 并调回 1。
+   */
+  function setPlaybackRate(rate: number): void {
+    const element = ensureAudio();
+    if (element.playbackRate === rate) return;
+    element.playbackRate = rate;
   }
 
   function setQuality(next: Quality): void {
@@ -570,6 +668,7 @@ export const usePlayerStore = defineStore('player', () => {
     seekByRatio,
     setVolume,
     toggleMute,
+    setPlaybackRate,
     setQuality,
     setPlayMode,
     setPreferredPlatform,

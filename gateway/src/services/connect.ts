@@ -15,7 +15,15 @@ import { badRequest, notFound } from '../lib/errors';
 
 export type DeviceKind = 'web' | 'android' | 'windows';
 
-/** 当前曲目的摘要。带宽敏感，只带展示需要的最小字段。 */
+/** 曲目的取流坐标（平台 + id）。跟随播放的端要靠它去解析音频地址。 */
+export interface TrackSourceSnapshot {
+  platform: string;
+  id: string;
+  mid?: string;
+  numericId?: string;
+}
+
+/** 当前曲目的摘要。带宽敏感，只带展示与取流需要的最小字段。 */
 export interface TrackSnapshot {
   key: string;
   title: string;
@@ -23,6 +31,11 @@ export interface TrackSnapshot {
   album: string;
   cover: string | null;
   durationMs: number;
+  /**
+   * 跟着一起上报，而不是让跟随端反过来问：
+   * 少了它，别的设备就算看到「这台在放什么」也放不出来（拿不到 platform + id）。
+   */
+  sources: TrackSourceSnapshot[];
 }
 
 export interface PlaybackSnapshot {
@@ -36,6 +49,13 @@ export interface PlaybackSnapshot {
   volume: number;
   quality: string;
   queueLength: number;
+  /**
+   * 这台设备正在跟随谁（对端的 deviceId）。
+   *
+   * 单独上报是为了让「谁跟着谁」成为互相可见的事实：光靠推断（两台都在放同一首）
+   * 分不清是同步播放还是各放各的，被跟随的一方也就没法确认对方到底跟上了没有。
+   */
+  following?: string;
 }
 
 export interface DeviceView {
@@ -78,14 +98,30 @@ const NAME_MAX = 40;
 const DEVICE_ID_MAX = 64;
 const PAYLOAD_MAX = 512 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** 一首歌最多保留几个取流坐标（实际上就 1~2 个，多出来的没有意义）。 */
+const MAX_TRACK_SOURCES = 4;
 
 /**
  * 允许远程执行的指令。白名单而非透传：客户端不该能借用网关发送任意消息。
  *
  * - `transfer`：接管播放（带上队列与进度），既是「投放」也是「搬回来」；
- * - `release`：对方要接管，把你的队列交出去并停下自己。
+ * - `release`：对方要接管，把你的队列交出去并停下自己；
+ * - `follow` / `unfollow`：让目标设备跟随发起方播放，或撤销这个请求。
+ *   跟随是双向可选的，这两个是「你跟着我」那一半（本地跟随不需要走协议）。
  */
-const ACTIONS = new Set(['play', 'pause', 'toggle', 'next', 'prev', 'seek', 'transfer', 'release']);
+const ACTIONS = new Set([
+  'play',
+  'pause',
+  'toggle',
+  'next',
+  'prev',
+  'seek',
+  'volume',
+  'follow',
+  'unfollow',
+  'transfer',
+  'release',
+]);
 
 /** userId → deviceId → 会话。 */
 const registry = new Map<string, Map<string, DeviceSession>>();
@@ -127,6 +163,27 @@ function readNumber(value: unknown, fallback: number, min: number, max: number):
   return Math.min(max, Math.max(min, parsed));
 }
 
+/** 清洗曲目的取流坐标。畸形项直接丢掉——宁可少一个音源，也别让跟随端拿到半截坐标。 */
+function sanitizeSources(value: unknown): TrackSourceSnapshot[] {
+  if (!Array.isArray(value)) return [];
+
+  const sources: TrackSourceSnapshot[] = [];
+  for (const item of value.slice(0, MAX_TRACK_SOURCES)) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Record<string, unknown>;
+    const platform = readString(raw.platform, 20);
+    const id = readString(raw.id, 200);
+    if (!platform || !id) continue;
+    sources.push({
+      platform,
+      id,
+      mid: readString(raw.mid, 200) || undefined,
+      numericId: readString(raw.numericId, 200) || undefined,
+    });
+  }
+  return sources;
+}
+
 /**
  * 清洗客户端上报的状态。
  *
@@ -151,6 +208,7 @@ function sanitizeSnapshot(input: unknown): PlaybackSnapshot | null {
         album: readString(source.album, 200),
         cover: readString(source.cover, 1000) || null,
         durationMs: readNumber(source.durationMs, 0, 0, DAY_MS),
+        sources: sanitizeSources(source.sources),
       };
     }
   }
@@ -165,6 +223,7 @@ function sanitizeSnapshot(input: unknown): PlaybackSnapshot | null {
     volume: readNumber(raw.volume, 1, 0, 1),
     quality: readString(raw.quality, 20),
     queueLength: Math.round(readNumber(raw.queueLength, 0, 0, 10_000)),
+    following: readString(raw.following, DEVICE_ID_MAX) || undefined,
   };
 }
 
@@ -183,7 +242,15 @@ function broadcast(userId: string): void {
   const devices = registry.get(userId);
   if (!devices || devices.size === 0) return;
   const list = [...devices.values()].map(view);
-  for (const session of devices.values()) session.send('devices', { devices: list });
+  /*
+   * 顺带带上服务端当前时间。
+   *
+   * 客户端推算「对方现在放到哪儿了」时，用的是自己的 Date.now() 去减服务端盖的
+   * positionAt —— 两台机器的时钟差多少，推算结果就整体偏多少，而且不会自愈。
+   * 有了这个字段，各端可以先算出自己与服务端的偏移量再推算，把偏差压回网络延迟级别。
+   */
+  const payload = { devices: list, serverNow: Date.now() };
+  for (const session of devices.values()) session.send('devices', payload);
 }
 
 /**
@@ -249,8 +316,12 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
   beat = setInterval(() => raw.write(': ping\n\n'), HEARTBEAT_MS);
   raw.on('close', () => session.detach());
 
-  // 先自报家门：客户端由此拿到自己的 deviceId 与当前全部设备。
-  session.send('hello', { deviceId, devices: [...devices.values()].map(view) });
+  // 先自报家门：客户端由此拿到自己的 deviceId、当前全部设备，以及服务端时间。
+  session.send('hello', {
+    deviceId,
+    devices: [...devices.values()].map(view),
+    serverNow: Date.now(),
+  });
   broadcast(userId);
 }
 
