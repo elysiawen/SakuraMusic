@@ -88,7 +88,14 @@ interface DeviceSession {
   kind: DeviceKind;
   state: PlaybackSnapshot | null;
   send: (event: string, payload: unknown) => void;
-  detach: () => void;
+  /**
+   * 摘下这条连接。
+   *
+   * `silent` 用于「被同一台设备的新连接顶掉」：那一刻广播「离线」是假的 ——
+   * 新连接马上就会重新入册，而对面的跟随端看到那一帧就会判定目标下线、
+   * 直接放弃同步播放。一次毫秒级的重连，代价不该是一整段同步被打断。
+   */
+  detach: (silent?: boolean) => void;
 }
 
 const HEARTBEAT_MS = 25_000;
@@ -269,8 +276,22 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
     throw badRequest(`同一账号最多同时连接 ${MAX_DEVICES_PER_USER} 台设备`, 'too_many_devices');
   }
 
-  // 同一台设备重连（刷新页面、断线重连）：顶掉旧连接，别在一台设备上挂两条。
-  devices.get(deviceId)?.detach();
+  /*
+   * 同一台设备重连（刷新页面、断线重连）：顶掉旧连接，别在一台设备上挂两条。
+   *
+   * 顶替必须是**静默**的：新连接马上就入册，中间那一帧假的「离线」只会让
+   * 别人（尤其是正在跟随它的设备）判定目标下线并直接放弃同步播放。
+   */
+  devices.get(deviceId)?.detach(true);
+
+  /*
+   * detach 有可能在清空后把整个桶从 registry 里摘掉（见下面的 detach），
+   * 所以这里必须重新取一次桶，不能沿用上面那个局部变量：
+   * 新会话一旦被写进已经和 registry 脱钩的 Map，它就成了幽灵 —— 连接是活的
+   * （客户端收得到 hello），但服务端查不到它：状态上报全部 `ok:false`、
+   * 广播收不到、在别人眼里等于离线，得等它再断一次才能重新入册。
+   */
+  const live = bucket(userId);
 
   reply.hijack();
   const raw = reply.raw;
@@ -286,6 +307,8 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
 
   /** 心跳句柄放在闭包里，就不必让它在会话对象上占一个字段。 */
   let beat: NodeJS.Timeout | undefined;
+  /** 摘除只生效一次：显式顶替与 socket 的 close 事件会各触发一次。 */
+  let detached = false;
 
   const session: DeviceSession = {
     deviceId,
@@ -300,18 +323,22 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
     detach: () => undefined,
   };
 
-  session.detach = (): void => {
+  session.detach = (silent = false): void => {
+    if (detached) return;
+    detached = true;
+
     clearInterval(beat);
     // 只有表里仍是自己时才摘：重连场景下新连接可能已经接管了这个 deviceId。
-    if (devices.get(deviceId) === session) {
-      devices.delete(deviceId);
-      if (devices.size === 0) registry.delete(userId);
+    if (live.get(deviceId) === session) {
+      live.delete(deviceId);
+      if (live.size === 0) registry.delete(userId);
     }
     if (!raw.writableEnded) raw.end();
-    broadcast(userId);
+    // 被新连接顶替时保持静默：那一帧「离线」是假的。
+    if (!silent) broadcast(userId);
   };
 
-  devices.set(deviceId, session);
+  live.set(deviceId, session);
   // 只有注释行的保活帧不产生任何 JS 事件，但能穿过一切中间代理，防止连接被判空闲。
   beat = setInterval(() => raw.write(': ping\n\n'), HEARTBEAT_MS);
   raw.on('close', () => session.detach());
@@ -319,7 +346,7 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
   // 先自报家门：客户端由此拿到自己的 deviceId、当前全部设备，以及服务端时间。
   session.send('hello', {
     deviceId,
-    devices: [...devices.values()].map(view),
+    devices: [...live.values()].map(view),
     serverNow: Date.now(),
   });
   broadcast(userId);

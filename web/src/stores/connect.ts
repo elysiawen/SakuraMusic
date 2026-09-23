@@ -27,6 +27,14 @@ const DRIFT_CHECK_MS = 1_000;
 const DRIFT_THRESHOLD_S = 1.5;
 /** 两次「因偏差补报」之间的最小间隔，免得卡顿时补得比原来的周期上报还勤。 */
 const DRIFT_COOLDOWN_MS = 5_000;
+/**
+ * 目标设备在广播里缺席多久，才认定它真的下线。
+ *
+ * 单看一帧列表分不清「下线」和「瞬断重连」：设备重连时，旧连接被摘除与新连接
+ * 入册之间会短暂不在列表里。一帧看不见就停止跟随的话，一次毫秒级的中断会让
+ * 同步播放永久停摆 —— following 已经清掉，对方回来了也不会自动恢复。
+ */
+const LEADER_GRACE_MS = 15_000;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
 /** 跟随时偏差超过这个秒数就直接 seek —— 靠速率微调追要等几十秒。 */
@@ -169,6 +177,8 @@ export const useConnectStore = defineStore('connect', () => {
    */
   let baseline: { position: number; at: number } | null = null;
   let lastDriftReportAt = 0;
+  /** 目标设备开始缺席的时刻（performance.now()）；null 表示它就在列表里。 */
+  let leaderMissingSince: number | null = null;
 
   /** 取一份当前的播放状态快照。 */
   function buildState(): ConnectStateInput {
@@ -256,7 +266,27 @@ export const useConnectStore = defineStore('connect', () => {
       },
     );
 
-    driftTimer = window.setInterval(checkDrift, DRIFT_CHECK_MS);
+    driftTimer = window.setInterval(() => {
+      checkDrift();
+      // 目标彻底下线后不会再有广播，光靠 devices 事件是等不到第二次判定的。
+      expireLeaderIfGone();
+    }, DRIFT_CHECK_MS);
+  }
+
+  /**
+   * 目标设备缺席太久就真的收手。
+   *
+   * 宽限期兜的是「瞬断重连」：那段时间里目标确实不在列表里，但它马上会回来，
+   * following 因此得以保留，同步会自动接上 —— 而不是被一次抖动永久打断。
+   */
+  function expireLeaderIfGone(): void {
+    if (!following.value || leaderMissingSince === null) return;
+    if (performance.now() - leaderMissingSince < LEADER_GRACE_MS) return;
+
+    leaderMissingSince = null;
+    following.value = null;
+    usePlayerStore().setPlaybackRate(1);
+    toast.info('跟随的设备已离线，已停止同步');
   }
 
   /**
@@ -359,6 +389,7 @@ export const useConnectStore = defineStore('connect', () => {
     for (const timer of ackTimers) window.clearTimeout(timer);
     ackTimers.clear();
     baseline = null;
+    leaderMissingSince = null;
     following.value = null;
     // 同理：断开时把追赶速率复位，免得下次播放莫名其妙快/慢几个百分点。
     usePlayerStore().setPlaybackRate(1);
@@ -525,12 +556,19 @@ export const useConnectStore = defineStore('connect', () => {
     const player = usePlayerStore();
     const leader = devices.value.find((item) => item.deviceId === target);
 
-    // 目标下线了：跟随没有意义了，自动收手。
+    /*
+     * 目标不在列表里：先别急着收手。
+     *
+     * 设备重连时会在列表里缺席一小会儿（旧连接被摘除、新连接还没入册），
+     * 一帧看不见就清掉 following 的话，一次毫秒级的中断就能把同步永久打断，
+     * 而且对方回来也不会自动恢复。所以先记下缺席起点，交给宽限期去判
+     * （见 expireLeaderIfGone）—— 真的下线了才收手。
+     */
     if (!leader) {
-      following.value = null;
-      toast.info('跟随的设备已离线，已停止同步');
+      if (leaderMissingSince === null) leaderMissingSince = performance.now();
       return;
     }
+    leaderMissingSince = null;
 
     const state = leader.state;
     if (!state?.track) return;
@@ -593,6 +631,7 @@ export const useConnectStore = defineStore('connect', () => {
      * 而且面板上「跟随它」和「跟随我」会同时点亮，看起来就像个 bug。
      */
     if (device.state?.following === deviceId.value) void control(device.deviceId, 'unfollow');
+    leaderMissingSince = null;
     following.value = device.deviceId;
     toast.success(`已跟随「${device.name}」播放`);
     void syncToLeader();
@@ -600,6 +639,7 @@ export const useConnectStore = defineStore('connect', () => {
 
   function stopFollowing(): void {
     if (!following.value) return;
+    leaderMissingSince = null;
     following.value = null;
     // 别把追赶用的速率留在身上。
     usePlayerStore().setPlaybackRate(1);
