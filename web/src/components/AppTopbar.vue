@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
@@ -16,6 +16,56 @@ const toast = useToast();
 
 const keyword = ref(String(route.query.q ?? ''));
 const menuOpen = ref(false);
+
+/**
+ * 地址栏 → 搜索框：q 变化时回填输入框。
+ * 回车搜索、前进 / 后退、直接改地址栏、从别处带 q 跳进来都会改 q，
+ * 只在 setup 时读一次的话，就会出现「地址栏里是 111、框里却空着」。
+ * 只 watch 单个 q：切页签 / 翻页只动 type、page，不会打断正在输入的内容。
+ * 后续没有 q 的页面（歌手 / 专辑详情）保留上次关键词，不把框清空。
+ */
+watch(
+  () => route.query.q,
+  (value) => {
+    const next = String(value ?? '');
+    if (!next) return;
+    keyword.value = next;
+  },
+);
+
+/**
+ * 搜索框 → 地址栏：输入停下 350ms 后写进 URL。
+ *
+ * 用输入框的 @input 而不是 watch(keyword)：上面那个回填也会改 keyword，
+ * watch 分不清来源，会把回填值再写回地址栏、顺带把页码删掉。
+ *
+ * 仅限搜索页 —— 在首页 / 详情页打字不该污染当前地址。
+ * 用 replace，不往后退栈里塞条目，才不会把「返回上一页」顶掉。
+ */
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onKeywordInput(): void {
+  if (route.name !== 'search') return;
+
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    const query: LocationQueryRaw = { ...route.query };
+    const trimmed = keyword.value.trim();
+
+    if (trimmed) {
+      query.q = trimmed;
+      // 关键词真的换了才回第一页；只是补个空格之类不算换词。
+      if (trimmed !== String(route.query.q ?? '')) delete query.page;
+    } else {
+      delete query.q;
+      delete query.page;
+    }
+
+    void router.replace({ query });
+  }, 350);
+}
+
+onUnmounted(() => clearTimeout(syncTimer));
 
 /**
  * 能否返回上一页。
@@ -48,6 +98,8 @@ const modeSummary = computed(() => {
 function submit(): void {
   const value = keyword.value.trim();
   if (!value) return;
+  // 防抖同步可能已经把这段关键词写进地址栏了，别再压一条一模一样的历史记录。
+  if (route.name === 'search' && String(route.query.q ?? '') === value) return;
   void router.push({ name: 'search', query: { q: value } });
 }
 
@@ -84,6 +136,7 @@ async function logout(): Promise<void> {
         class="input"
         type="search"
         placeholder="搜索歌曲、歌手 —— 同时聚合网易云与 QQ 音乐"
+        @input="onKeywordInput"
         @keyup.enter="submit"
       />
     </div>
