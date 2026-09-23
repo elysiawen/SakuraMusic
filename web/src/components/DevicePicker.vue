@@ -11,10 +11,22 @@ import AppIcon from './AppIcon.vue';
  * 设备按钮 + 设备面板，自带「点击外部关闭」。
  * 播放条（向上弹出）与全屏播放页顶栏（向下弹出）共用。
  */
-const props = withDefaults(defineProps<{ placement?: 'up' | 'down'; size?: number }>(), {
-  placement: 'up',
-  size: 17,
-});
+const props = withDefaults(
+  defineProps<{
+    placement?: 'up' | 'down';
+    /**
+     * 面板朝哪一侧展开。
+     * 按钮靠着屏幕右边时用 end（默认），挪到左边时必须用 start，否则面板会顶出屏幕。
+     */
+    align?: 'start' | 'end';
+    size?: number;
+  }>(),
+  {
+    placement: 'up',
+    align: 'end',
+    size: 17,
+  },
+);
 
 const connect = useConnectStore();
 const player = usePlayerStore();
@@ -155,7 +167,7 @@ function commitRename(): void {
       <span v-if="connect.othersPlaying" class="device-dot" />
     </button>
 
-    <div v-if="open" class="device-panel" :class="`is-${props.placement}`">
+    <div v-if="open" class="device-panel" :class="[`is-${props.placement}`, `is-align-${props.align}`]">
       <header class="between" style="gap: 8px">
         <div class="stack" style="gap: 1px">
           <strong style="font-size: 14px">播放设备</strong>
@@ -262,11 +274,9 @@ function commitRename(): void {
 
 .device-panel {
   position: absolute;
-  right: 0;
   /*
-   * 宽度上限里减掉的 34px = 顶栏自身的 26px 内边距 + 右侧一点留白。
-   * 锚点是贴着容器右边的按钮，而面板朝左展开，不减掉这一段就会溢出屏幕左侧
-   * （表现就是面板标题「播放设备」被裁掉半截）。
+   * 宽度上限里减掉的 34px = 顶栏自身的 26px 内边距 + 一点留白。
+   * 面板朝锚点的一侧展开（见下面的 is-align-*），不减掉这一段就会顶出屏幕。
    */
   width: min(340px, calc(100vw - 34px));
   padding: 12px;
@@ -289,6 +299,34 @@ function commitRename(): void {
 
 .device-panel.is-down {
   top: calc(100% + 10px);
+}
+
+/* 面板从锚点的哪一侧展开：锚点靠屏幕右边用 end（朝左展开），靠左边用 start（朝右展开）。 */
+.device-panel.is-align-end {
+  right: 0;
+}
+
+.device-panel.is-align-start {
+  left: 0;
+}
+
+/*
+ * 窄屏：面板不再跟着锚点的水平位置展开。
+ *
+ * 按钮可能落在中间（右边还并排着点赞与队列），此时朝左或朝右展开都有一边会顶出屏幕。
+ * 索性让它直接贴住屏幕两侧 —— 宽度自适应，位置也不再受锚点位移影响。
+ * 只对 is-down 生效：播放条上那个实例在窄屏本来就是隐藏的。
+ */
+@media (max-width: 860px) {
+  .device-panel.is-down {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    /* 顶栏高度（20px 内边距 + 36px 按钮）再留一点间隙。 */
+    top: calc(var(--safe-top, 0px) + 76px);
+    bottom: auto;
+  }
 }
 
 .device-list {

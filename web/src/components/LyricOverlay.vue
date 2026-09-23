@@ -175,13 +175,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
         </div>
 
         <div class="lyric-actions">
-          <LikeButton :size="18" />
-          <QueueButton placement="down" :size="18" />
           <!--
-            设备按钮放在最右：它的面板朝左展开，贴着屏幕右边缘才不会被裁掉左侧。
-            顺序与播放条上的 [队列][设备] 保持一致。
+            放在点赞左边。锚点右边还有两个按钮，所以它的面板没法跟着锚点的水平位置展开
+            （朝左或朝右都有一边会顶出屏幕）——窄屏下由组件自己改为贴屏幕两侧。
           -->
           <DevicePicker placement="down" :size="18" />
+          <LikeButton :size="18" />
+          <QueueButton placement="down" :size="18" />
         </div>
       </header>
 
