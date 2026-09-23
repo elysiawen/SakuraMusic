@@ -94,6 +94,18 @@ function unwrap(response: RawResponse): Record<string, any> {
   return body;
 }
 
+/**
+ * 取第一个非空的图片地址，并把 http 升级为 https。
+ *
+ * 网易云的图片 CDN 两种协议都支持，但部分接口（cloudsearch 的封面、歌单的 coverImgUrl）
+ * 返回的是 http —— 页面跑在 https 下时会被浏览器当成混合内容直接拦掉，症状同样是「没有封面」。
+ */
+function firstImage(...values: unknown[]): string | undefined {
+  const url = firstStr(...values);
+  if (!url) return undefined;
+  return url.startsWith('http://') ? `https://${url.slice('http://'.length)}` : url;
+}
+
 export function mapNeteaseSong(raw: unknown): UnifiedTrack | null {
   const song = asObj(raw);
   const id = str(song.id);
@@ -114,7 +126,7 @@ export function mapNeteaseSong(raw: unknown): UnifiedTrack | null {
       name: str(album.name),
       id: str(album.id) || undefined,
       platform: PLATFORM,
-      cover: firstStr(album.picUrl, album.picUrl_str) || undefined,
+      cover: firstImage(album.picUrl, album.picUrl_str),
     },
     durationMs: num(song.dt ?? song.duration),
     sources: [{ platform: PLATFORM, id }],
@@ -133,7 +145,7 @@ export function mapNeteaseArtist(raw: unknown): PlatformArtist | null {
     platform: PLATFORM,
     id,
     name: stripHtml(item.name),
-    avatar: firstStr(item.picUrl, item.img1v1Url) || undefined,
+    avatar: firstImage(item.picUrl, item.img1v1Url),
     subtitle: alias.length > 0 ? alias.join(' / ') : undefined,
     songCount: num(item.musicSize) || undefined,
     albumCount: num(item.albumSize) || undefined,
@@ -158,7 +170,7 @@ function mapNeteaseAlbum(raw: unknown): PlatformAlbum | null {
     platform: PLATFORM,
     id,
     name: stripHtml(item.name),
-    cover: firstStr(item.picUrl, item.picUrl_str) || undefined,
+    cover: firstImage(item.picUrl, item.picUrl_str),
     artists: asArr(rawArtists)
       .map((value) => {
         const artist = asObj(value);
@@ -177,7 +189,7 @@ function mapNeteasePlaylist(raw: unknown): PlaylistSummary {
     platform: PLATFORM,
     id: str(item.id),
     title: stripHtml(item.name),
-    cover: str(item.coverImgUrl) || undefined,
+    cover: firstImage(item.coverImgUrl),
     description: str(item.description) || undefined,
     trackCount: num(item.trackCount),
   };
@@ -195,8 +207,14 @@ async function searchResult(
   cookie: string | null,
 ): Promise<Record<string, any>> {
   const offset = Math.max(0, (page - 1) * limit);
+  /*
+   * 走 /cloudsearch 而不是 /search：只有新版接口的曲目带专辑封面地址。
+   * 旧版返回的 album 里只有 picId、没有 picUrl —— 表现就是网易云的歌全都没有封面，
+   * 只有恰好与 QQ 音乐指向同一首时，才会在聚合去重那一步借到对方的封面。
+   * 四类结果在两种接口下的字段名一致（songs / artists / albums / playlists），可直接换。
+   */
   const body = unwrap(
-    await upstreamJson<RawResponse>('/search', {
+    await upstreamJson<RawResponse>('/cloudsearch', {
       cookie,
       query: { keywords: keyword, type, limit, offset },
     }),
@@ -314,7 +332,7 @@ export async function toplists(cookie: string | null): Promise<PlaylistSummary[]
       platform: PLATFORM,
       id: str(item.id),
       title: str(item.name),
-      cover: str(item.coverImgUrl) || undefined,
+      cover: firstImage(item.coverImgUrl),
       description: str(item.description) || undefined,
       trackCount: num(item.trackCount),
     };
@@ -334,7 +352,7 @@ export async function playlistMeta(id: string, cookie: string | null): Promise<P
   const playlist = asObj(body.playlist);
   return {
     title: firstStr(playlist.name, '歌单'),
-    cover: str(playlist.coverImgUrl) || undefined,
+    cover: firstImage(playlist.coverImgUrl),
     description: str(playlist.description) || undefined,
     trackCount: num(playlist.trackCount),
   };
@@ -428,7 +446,7 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
   const profile = asObj(asObj(body.data).profile);
   return {
     nickname: firstStr(profile.nickname, '网易云用户'),
-    avatar: str(profile.avatarUrl) || undefined,
+    avatar: firstImage(profile.avatarUrl),
     userId: str(profile.userId) || undefined,
     vip: num(profile.vipType) > 0,
   };
