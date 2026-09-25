@@ -178,6 +178,27 @@ function toggleRequestFollow(device: ConnectDevice): void {
   else void connect.requestFollow(device);
 }
 
+/**
+ * 面板上「跟随它」能不能出现。
+ *
+ * 除了「它有内容可跟」，还有一个必须放行的情形：**本机正跟着它**。
+ * 否则它一停下（track 变空），连「停止跟随」的入口都会跟着消失，
+ * 用户只能眼睁睁看着本机被一个再也关不掉的关系牵着走。
+ */
+function canFollowTarget(device: ConnectDevice): boolean {
+  return Boolean(device.state?.track) || connect.following === device.deviceId;
+}
+
+/**
+ * 「播到这台」能不能出现：本机有内容可交出去，或它手里有内容可接过来。
+ *
+ * 只有两边都空时才没得播。设备空着恰恰是把本机播放送过去的最好时机 ——
+ * 这个按钮以前被「对方得有 track」挡住，等于把最该用它的场景排除掉了。
+ */
+function canCast(device: ConnectDevice): boolean {
+  return player.queue.length > 0 || Boolean(device.state?.track);
+}
+
 /*
  * 正在拖动的滑块：key 是 `${deviceId}:progress|volume`，值是被拖到的位置。
  *
@@ -325,65 +346,75 @@ function commitRename(): void {
             {{ trackLineOf(device) }}
           </p>
 
-          <!-- 远程控制：只对别的设备、且它确实有内容时出现 -->
-          <template v-if="!isSelf(device) && device.state?.track">
-            <div class="device-control">
-              <span class="device-control-time">{{ positionText(device) }}</span>
-              <input
-                class="device-slider"
-                type="range"
-                min="0"
-                :max="Math.max(1, device.state.duration || 0)"
-                step="1"
-                :value="sliderValue(device, 'progress')"
-                title="拖动调整它的播放进度"
-                @input="onSliderInput(device, 'progress', $event)"
-                @change="onSliderCommit(device, 'progress', $event)"
-              />
-              <span class="device-control-time">{{ durationText(device) }}</span>
-            </div>
+          <!-- 进度：要有内容才谈得上拖 -->
+          <div v-if="!isSelf(device) && device.state?.track" class="device-control">
+            <span class="device-control-time">{{ positionText(device) }}</span>
+            <input
+              class="device-slider"
+              type="range"
+              min="0"
+              :max="Math.max(1, device.state.duration || 0)"
+              step="1"
+              :value="sliderValue(device, 'progress')"
+              title="拖动调整它的播放进度"
+              @input="onSliderInput(device, 'progress', $event)"
+              @change="onSliderCommit(device, 'progress', $event)"
+            />
+            <span class="device-control-time">{{ durationText(device) }}</span>
+          </div>
 
-            <div class="device-control">
-              <span class="device-control-icon" :title="`调整「${device.name}」的音量`">
-                <AppIcon name="volume" :size="14" />
-              </span>
-              <input
-                class="device-slider"
-                type="range"
-                min="0"
-                max="1"
-                step="0.02"
-                :value="sliderValue(device, 'volume')"
-                :title="`调整「${device.name}」的音量`"
-                @input="onSliderInput(device, 'volume', $event)"
-                @change="onSliderCommit(device, 'volume', $event)"
-              />
-            </div>
+          <!--
+            音量是**设备**自己的属性，与在放什么无关：它只是没在放歌，不代表不需要合适的响度，
+            所以这一行不跟着「有内容」一起藏起来。
+          -->
+          <div v-if="!isSelf(device)" class="device-control">
+            <span class="device-control-icon" :title="`调整「${device.name}」的音量`">
+              <AppIcon name="volume" :size="14" />
+            </span>
+            <input
+              class="device-slider"
+              type="range"
+              min="0"
+              max="1"
+              step="0.02"
+              :value="sliderValue(device, 'volume')"
+              :title="`调整「${device.name}」的音量`"
+              @input="onSliderInput(device, 'volume', $event)"
+              @change="onSliderCommit(device, 'volume', $event)"
+            />
+          </div>
 
-            <div class="device-card-actions">
-              <button
-                class="btn device-btn"
-                type="button"
-                :class="{ 'is-active': connect.following === device.deviceId }"
-                :title="followHint(device)"
-                @click="toggleFollow(device)"
-              >
-                {{ connect.following === device.deviceId ? '停止跟随' : '跟随它' }}
-              </button>
-              <button
-                class="btn device-btn"
-                type="button"
-                :class="{ 'is-active': device.state?.following === connect.deviceId }"
-                :title="requestFollowHint(device)"
-                @click="toggleRequestFollow(device)"
-              >
-                跟随我
-              </button>
-              <button class="btn device-btn" type="button" :title="castHint(device)" @click="activate(device)">
-                播到这台
-              </button>
-            </div>
-          </template>
+          <!-- 远程操作：只对别的设备。空着的设备恰恰最需要这几个入口，所以不再要求它有内容。 -->
+          <div v-if="!isSelf(device)" class="device-card-actions">
+            <button
+              v-if="canFollowTarget(device)"
+              class="btn device-btn"
+              type="button"
+              :class="{ 'is-active': connect.following === device.deviceId }"
+              :title="followHint(device)"
+              @click="toggleFollow(device)"
+            >
+              {{ connect.following === device.deviceId ? '停止跟随' : '跟随它' }}
+            </button>
+            <button
+              class="btn device-btn"
+              type="button"
+              :class="{ 'is-active': device.state?.following === connect.deviceId }"
+              :title="requestFollowHint(device)"
+              @click="toggleRequestFollow(device)"
+            >
+              跟随我
+            </button>
+            <button
+              v-if="canCast(device)"
+              class="btn device-btn"
+              type="button"
+              :title="castHint(device)"
+              @click="activate(device)"
+            >
+              播到这台
+            </button>
+          </div>
         </section>
       </div>
     </div>

@@ -35,6 +35,13 @@ const DRIFT_COOLDOWN_MS = 5_000;
  * 同步播放永久停摆 —— following 已经清掉，对方回来了也不会自动恢复。
  */
 const LEADER_GRACE_MS = 15_000;
+/**
+ * 音量上报的防抖间隔。
+ *
+ * 拖音量条时指针每移动一格就会改一次音量，不防抖的话一次拖动就是几十个请求；
+ * 拖完停下来这么久才报一次，和 Android 端的上报防抖是同一个量级。
+ */
+const VOLUME_REPORT_DEBOUNCE_MS = 300;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
 /** 跟随时偏差超过这个秒数就直接 seek —— 靠速率微调追要等几十秒。 */
@@ -165,7 +172,10 @@ export const useConnectStore = defineStore('connect', () => {
   let source: EventSource | null = null;
   let stopStateWatch: WatchStopHandle | null = null;
   let stopSeekWatch: WatchStopHandle | null = null;
+  let stopVolumeWatch: WatchStopHandle | null = null;
   let driftTimer: number | undefined;
+  /** 音量上报的防抖句柄：拖动期间只报最后停下来的那个值。 */
+  let volumeReportTimer: number | undefined;
   /** 等待「送达确认」的定时器，stop() 时要一并清掉。 */
   const ackTimers = new Set<number>();
 
@@ -263,6 +273,24 @@ export const useConnectStore = defineStore('connect', () => {
       () => player.currentTime,
       () => {
         if (!player.playing) void report();
+      },
+    );
+
+    /*
+     * 音量：本机拖音量条会高频改动它，所以单独 watch + 防抖 ——
+     * 混进上面那个「立刻上报」的 watch 里，一次拖动就是几十个请求。
+     *
+     * 它不参与跟随同步（各设备的输出音量各自管），但别的设备的面板要显示它，
+     * 不报的话对方看到的永远是旧值。
+     */
+    stopVolumeWatch = watch(
+      () => player.volume,
+      () => {
+        if (volumeReportTimer !== undefined) window.clearTimeout(volumeReportTimer);
+        volumeReportTimer = window.setTimeout(() => {
+          volumeReportTimer = undefined;
+          void report();
+        }, VOLUME_REPORT_DEBOUNCE_MS);
       },
     );
 
@@ -386,6 +414,10 @@ export const useConnectStore = defineStore('connect', () => {
       window.clearInterval(driftTimer);
       driftTimer = undefined;
     }
+    if (volumeReportTimer !== undefined) {
+      window.clearTimeout(volumeReportTimer);
+      volumeReportTimer = undefined;
+    }
     for (const timer of ackTimers) window.clearTimeout(timer);
     ackTimers.clear();
     baseline = null;
@@ -398,6 +430,8 @@ export const useConnectStore = defineStore('connect', () => {
     stopStateWatch = null;
     stopSeekWatch?.();
     stopSeekWatch = null;
+    stopVolumeWatch?.();
+    stopVolumeWatch = null;
   }
 
   /**
