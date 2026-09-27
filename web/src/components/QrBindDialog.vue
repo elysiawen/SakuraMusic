@@ -55,8 +55,8 @@ function stopPolling(): void {
 
 /**
  * 释放服务端扫码会话。
- * 手机端扫码在 sidecar 里维持着一条 MQTT 长连接，用户关闭弹窗或刷新二维码时
- * 需要显式告知服务端断开，否则要空耗到超时。
+ * 手机端扫码在 QQ 上游（qq-upstream/mobile.py）里维持着一条 MQTT 长连接，用户关闭弹窗或刷新二维码时
+ * 需要显式告知它断开，否则要空耗到超时。
  */
 async function releaseSession(): Promise<void> {
   const currentIdentifier = identifier.value;

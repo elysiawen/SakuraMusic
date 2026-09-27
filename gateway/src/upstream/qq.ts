@@ -1,13 +1,14 @@
 /**
  * QQ 音乐适配器。
- * 上游为 QQMusicApi 自带的 FastAPI 服务，响应统一为 `{ code, msg, data }`，`code === 0` 表示成功。
- * 凭据通过 `Cookie` 头注入（`web/src/core/auth.py` 的 `credential_from_cookies` 会读取这些 Cookie，
- * 且 Cookie 凭据优先级高于服务端共享账号池）。
+ *
+ * 上游是**自建**服务 `qq-upstream/`（基于 PyPI 发布版 `qqmusic-api-python`，见该目录的 app.py）：
+ * 它复刻了 QQMusicApi web 层的路径与响应形状，所以这里照旧读 `{ code, msg, data }`（`code === 0` 即成功）。
+ * 凭据通过 `Cookie` 头注入 —— 那个服务按「请求带什么就用什么」处理，没有共享账号池。
  */
 import { config } from '../config';
 import { upstreamError } from '../lib/errors';
-import { asArr, asObj, firstNum, firstStr, num, str, stripHtml } from '../lib/parse';
-import { upstreamJson, type UpstreamOptions } from './http';
+import { asArr, asObj, firstStr, num, str, stripHtml } from '../lib/parse';
+import { upstreamJson } from './http';
 import type {
   AccountProfile,
   LyricResult,
@@ -24,7 +25,7 @@ const BASE = config.qqBaseUrl;
 
 /**
  * 音质档位 → `file_type` 整数映射。
- * 枚举值取自 QQMusicApi 的 `EnumIntMapping`（SongFileType 段，索引 0 起）：
+ * 这个整数是 **SDK 枚举成员的下标**（`list(SongFileType)[index]`，两边同一套顺序）：
  * 1 = MASTER(臻品母带)、7 = FLAC(SQ 无损)、12 = MP3_320(HQ)、13 = MP3_128(标准)。
  * 每档附带降级链，避免无会员时整首歌播不出来。
  */
@@ -52,8 +53,9 @@ function unwrap(response: RawResponse, path: string): unknown {
 /* --------------------------- 凭据 ↔ Cookie --------------------------- */
 
 /**
- * 写入 Cookie 的字段名必须与 QQMusicApi 读取时一致（python 侧的 snake_case 名称）。
- * 注意上游返回的 Credential JSON 中部分字段使用 camelCase 别名，因此读取时两种都试。
+ * 写入 Cookie 的字段名用 python 侧的 snake_case 名称（与 SDK 的 Credential 字段一致，
+ * 自建上游就是按这些名字解析的）。上游返回的 Credential JSON 里部分字段是 camelCase 别名，
+ * 所以读取时两种都试。
  */
 const CREDENTIAL_COOKIE_FIELDS: Array<[string, string[]]> = [
   ['musicid', ['musicid']],
@@ -356,9 +358,11 @@ export async function toplists(cookie: string | null): Promise<PlaylistSummary[]
         platform: PLATFORM,
         id: str(item.id),
         title: firstStr(item.name, item.title),
-        cover: str(item.frontPicUrl) || undefined,
+        // 上游输出的是 snake_case（web 层用 response_model_by_alias=False 序列化），
+        // 以前这里读 camelCase，封面和曲目数一直是空的。
+        cover: str(item.front_pic_url) || undefined,
         description: firstStr(item.intro, item.title_sub) || undefined,
-        trackCount: num(item.totalNum),
+        trackCount: num(item.total_num),
       });
     }
   }
@@ -383,7 +387,8 @@ export async function toplistTracks(
   const info = asObj(data.info);
   return {
     title: firstStr(info.name, info.title),
-    cover: str(info.frontPicUrl) || undefined,
+    // 同上：榜单详情里的封面色也是 snake_case。
+    cover: str(info.front_pic_url) || undefined,
     items: mapQqSongs(data.songs),
   };
 }
@@ -543,12 +548,18 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
         `/user/${encryptUin}/homepage`,
       ),
     );
-    const header = asObj(data.header ?? data);
+    /*
+     * 昵称与头像在 `base_info` 里：这个接口返回的是 `{ base_info, singer, is_followed, tab_detail }`，
+     * 并没有 `header` 这一层。以前按 `data.header` 找，取不到就退化读顶层，于是 `nick` / `logo`
+     * 全部落空，用户永远看到「QQ 音乐用户 <QQ号>」——现在按真实契约读。
+     *
+     * 另外这里**不再报 `vip`**：会员信息不在此接口内，硬填 false 等于把「不知道」说成「不是会员」。
+     */
+    const info = asObj(data.base_info ?? data);
     return {
-      nickname: firstStr(header.nick, header.name, header.nickname, base.nickname),
-      avatar: firstStr(header.logo, header.headurl, header.avatar, header.pic) || undefined,
+      nickname: firstStr(info.name, info.nick, info.nickname, base.nickname),
+      avatar: firstStr(info.avatar, info.logo, info.headurl, info.pic) || undefined,
       userId: musicid || undefined,
-      vip: firstNum(header.vip_type, header.vipType) > 0,
     };
   } catch {
     return base;
@@ -634,26 +645,13 @@ export async function checkExpired(cookie: string): Promise<boolean> {
   return data === true;
 }
 
-/* ------------------- QQ 音乐客户端（App）扫码登录 sidecar ------------------- */
-
-const SIDECAR = config.qqSidecarBaseUrl;
+/* ------------------- QQ 音乐客户端（App）扫码登录 ------------------- */
 
 /**
- * 手机端扫码走 sakura-music 自己的 Python sidecar（见 sidecar/qq_mobile_login.py），
- * 因为它需要 MQTT 长连接来接收状态推送，而上游 Web 层的路由是单次请求-响应式的。
- * 上游 QQMusicApi 本身不做任何修改。
+ * 手机端扫码也走同一个上游（见 `qq-upstream/mobile.py`）：它为该二维码维持一条 MQTT 长连接
+ * 订阅扫码状态，HTTP 轮询只读上游内存里的快照。路径是 `/mobile/...`，响应同样是 `{ code, msg, data }`，
+ * 所以这里和别的接口用同一套解析（以前它是个独立 sidecar，响应形状不一样）。
  */
-async function sidecarJson<T>(path: string, options: UpstreamOptions = {}): Promise<T> {
-  try {
-    return await upstreamJson<T>(SIDECAR, path, options);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw upstreamError(
-      `手机端扫码服务不可用（${SIDECAR}）。请用 \`pnpm start:sidecar\` 启动它。原始错误：${message}`,
-      502,
-    );
-  }
-}
 
 export interface QqMobileQrCode {
   identifier: string;
@@ -661,27 +659,33 @@ export interface QqMobileQrCode {
   loginType: 'mobile';
 }
 
-/** 生成「QQ 音乐 App 扫码」二维码；sidecar 会为它维持一条 MQTT 长连接。 */
+/** 生成「QQ 音乐 App 扫码」二维码。生成时要访问 QQ 接口并建 MQTT 连接，所以超时给得宽一些。 */
 export async function mobileQrCode(): Promise<QqMobileQrCode> {
   const data = asObj(
-    await sidecarJson<Record<string, any>>('/mobile/qrcode', { method: 'POST', timeoutMs: 40000 }),
+    unwrap(
+      await upstreamJson<RawResponse>(BASE, '/mobile/qrcode', { method: 'POST', timeoutMs: 40000 }),
+      '/mobile/qrcode',
+    ),
   );
   return { identifier: str(data.identifier), img: str(data.img), loginType: 'mobile' };
 }
 
-/** 读取手机端扫码会话的最新事件（sidecar 内存读取，不产生额外网络请求）。 */
+/** 读取手机端扫码会话的最新事件（上游内存读取，不产生额外网络请求）。 */
 export async function mobileQrCheck(identifier: string): Promise<QqQrCheckResult> {
   const data = asObj(
-    await sidecarJson<Record<string, any>>('/mobile/qrcode/status', {
-      query: { identifier },
-      timeoutMs: 15000,
-    }),
+    unwrap(
+      await upstreamJson<RawResponse>(BASE, '/mobile/qrcode/status', {
+        query: { identifier },
+        timeoutMs: 15000,
+      }),
+      '/mobile/qrcode/status',
+    ),
   );
   const status = QR_EVENT_STATUS[num(data.event)] ?? 'waiting';
   const credential = status === 'success' ? asObj(data.credential) : null;
 
-  // sidecar 只在后台消费失败时写 message；此时必须优先报错，
-  // 否则（旧行为）事件会停在最后一帧，前端永远显示「已扫描，请在手机上确认登录」。
+  // 上游只在后台消费失败时写 message；此时必须优先报错，
+  // 否则事件会停在最后一帧，前端永远显示「已扫描，请在手机上确认登录」。
   const message = str(data.message);
   if (message && status !== 'success') {
     return { status: 'error', credential: null, message };
@@ -695,7 +699,9 @@ export async function mobileQrCheck(identifier: string): Promise<QqQrCheckResult
 
 /** 释放手机端扫码会话（用户关闭弹窗时调用，避免 MQTT 连接空耗到超时）。 */
 export async function releaseMobileQrCode(identifier: string): Promise<void> {
-  await sidecarJson('/mobile/qrcode', { method: 'DELETE', query: { identifier }, timeoutMs: 8000 }).catch(
-    () => undefined,
-  );
+  await upstreamJson<RawResponse>(BASE, '/mobile/qrcode', {
+    method: 'DELETE',
+    query: { identifier },
+    timeoutMs: 8000,
+  }).catch(() => undefined);
 }

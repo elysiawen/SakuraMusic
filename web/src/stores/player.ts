@@ -93,6 +93,34 @@ export const usePlayerStore = defineStore('player', () => {
   /** 回退所需的代理地址，仅在一次播放周期内有效。 */
   let directFallback: { proxy: string; platform: Platform } | null = null;
 
+  /**
+   * 下一次「设好 src」之后要从第几秒起播。
+   *
+   * 必须与 `currentTime` 分开：`currentTime` 是界面上「这首放到哪儿了」的实时回显，
+   * 由 timeupdate 每 250ms 写一次；而它表达的是**下一次加载**的起播位置。
+   * 两者曾共用同一个引用，于是切歌会这样翻车：解析新地址要等网络，这段时间旧音频还在响，
+   * 一次 timeupdate 就把 2:01 写了回来，等新歌的 src 设好就从这个位置起播了。
+   * 换句话说，「新歌从上一首的进度开始」是否发生，取决于那次请求有没有跨过 250ms 的节拍 ——
+   * 所以才表现得时有时无。切歌一律显式置 0，只有「恢复现场 / 换音质 / 换音源」才带值。
+   */
+  let pendingSeek = 0;
+
+  /**
+   * 是否正在为一段新地址做解析（`start()` 里那次网络请求）。
+   *
+   * 这段时间音频元素上还是**上一首**，它报的进度既不属于当前曲目，也不该被写回：
+   * 界面会显示旧进度，`persist()` 还会把旧位置记到新曲目名下（下次打开就从那儿续播）。
+   */
+  let resolvingSource = false;
+
+  /**
+   * 每次加载递增的令牌。
+   *
+   * 解析地址要等网络，期间用户可能又点了另一首：只有最后一次请求的结果能落到元素上，
+   * 否则先发后到的那次会把新歌的 src 覆盖成旧歌（点得快时表现为「播的不是点的那首」）。
+   */
+  let loadToken = 0;
+
   const current = computed<UnifiedTrack | null>(() => queue.value[index.value] ?? null);
   const activeSource = computed<TrackSource | null>(() =>
     current.value ? pickSource(current.value, preferredPlatform.value) : null,
@@ -105,7 +133,7 @@ export const usePlayerStore = defineStore('player', () => {
    *
    * 只把队列与位置摆好，**不自动出声**：浏览器会拦截自动播放，用户多半也不希望
    * 一进页面就被吵。界面显示「那首歌 + 停在原处的进度」，点一下播放就从那儿续上
-   * （见 start() 里对 currentTime 的处理）。
+   * （见 start() 里对 pendingSeek 的处理）。
    */
   if (Array.isArray(persisted.queue) && persisted.queue.length > 0) {
     queue.value = persisted.queue;
@@ -114,6 +142,8 @@ export const usePlayerStore = defineStore('player', () => {
         ? persisted.index
         : 0;
     currentTime.value = typeof persisted.position === 'number' && persisted.position > 0 ? persisted.position : 0;
+    // 起播位置交给 pendingSeek：所有入口里只有「恢复现场」一开始就该带着它。
+    pendingSeek = currentTime.value;
     // 音频元数据还没加载，先用曲目自带时长把进度条撑住，免得显示成 0:00。
     const restored = queue.value[index.value];
     if (restored) duration.value = restored.durationMs / 1000;
@@ -192,6 +222,8 @@ export const usePlayerStore = defineStore('player', () => {
     element.volume = volume.value;
 
     element.addEventListener('timeupdate', () => {
+      // 解析新地址期间，这个元素上还挂着上一首：它报的进度不算数。
+      if (resolvingSource) return;
       currentTime.value = element.currentTime;
       // 这个事件每 250ms 就来一次：攒着写盘，别让 localStorage 跟着这个频率抖。
       persistSoon();
@@ -332,8 +364,16 @@ export const usePlayerStore = defineStore('player', () => {
 
     loading.value = true;
     error.value = '';
+    /*
+     * 从这里到 src 设好之间，音频元素上还是上一首（解析地址要等网络）。
+     * 它照旧在响、照旧发 timeupdate —— 那段时间的进度一律不算数。
+     */
+    resolvingSource = true;
+    const token = ++loadToken;
     try {
       const result = await musicApi.resolvePlay(source.platform, source.id, quality.value);
+      // 这次解析已被更晚的一次切歌取代：交给它落地，别再动音频元素。
+      if (token !== loadToken) return;
       const element = ensureAudio();
 
       /*
@@ -350,13 +390,18 @@ export const usePlayerStore = defineStore('player', () => {
       trial.value = result.trial;
 
       /*
-       * 续播上次听到的位置。
+       * 起播位置只认 pendingSeek（由调用方表达）：切歌一律 0，
+       * 恢复现场 / 换音质 / 换音源才带值。在这里消费掉，免得残留到下一首。
        *
        * 设置 src 之后立刻写 currentTime 是允许的：此时 readyState 还是 HAVE_NOTHING，
        * 浏览器会把它记成「默认起播位置」，等数据到位后再跳过去。
-       * 正常播放路径上 currentTime 已被调用方重置为 0，所以这里只有「恢复上次现场」会命中。
        */
-      if (currentTime.value > 0.5) element.currentTime = currentTime.value;
+      const offset = pendingSeek;
+      pendingSeek = 0;
+      if (offset > 0.5) element.currentTime = offset;
+      currentTime.value = offset;
+      // src 已就位，往后这个元素报的就是当前曲目了。
+      resolvingSource = false;
 
       // 歌词与播放并行加载：即使浏览器策略或音频设备导致 play() 失败，
       // 用户依然可以打开歌词页查看歌词。
@@ -378,7 +423,12 @@ export const usePlayerStore = defineStore('player', () => {
       playing.value = false;
       toast.error(message);
     } finally {
-      loading.value = false;
+      // 已被更晚的一次加载接手时，这两个状态归它管。
+      if (token === loadToken) {
+        loading.value = false;
+        // 解析失败也要放行：否则 timeupdate 会被一直挡掉，界面进度从此不动。
+        resolvingSource = false;
+      }
     }
   }
 
@@ -396,6 +446,7 @@ export const usePlayerStore = defineStore('player', () => {
     } else {
       index.value = queue.value.findIndex((item) => item.key === track.key);
     }
+    pendingSeek = 0;
     currentTime.value = 0;
     duration.value = 0;
     await start();
@@ -405,6 +456,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (list.length === 0) return;
     queue.value = [...list];
     index.value = Math.min(Math.max(0, startIndex), list.length - 1);
+    pendingSeek = 0;
     currentTime.value = 0;
     duration.value = 0;
     await start();
@@ -426,6 +478,7 @@ export const usePlayerStore = defineStore('player', () => {
       playing.value = false;
       return;
     }
+    pendingSeek = 0;
     currentTime.value = 0;
     await start();
   }
@@ -437,6 +490,7 @@ export const usePlayerStore = defineStore('player', () => {
       return;
     }
     index.value = index.value > 0 ? index.value - 1 : queue.value.length - 1;
+    pendingSeek = 0;
     currentTime.value = 0;
     await start();
   }
@@ -510,11 +564,13 @@ export const usePlayerStore = defineStore('player', () => {
   function setQuality(next: Quality): void {
     quality.value = next;
     persist();
-    // 切换音质后用新档位重新加载当前歌曲，并保持播放进度。
-    const position = currentTime.value;
-    void start().then(() => {
-      if (position > 1) seek(position);
-    });
+    /*
+     * 换档位要重新取地址、重设 src，进度得自己留着：交给 pendingSeek 起播。
+     * 原先的「播起来之后再 seek 回去」不稳 —— 那时 duration 常常还是 NaN，
+     * seek() 会直接返回，于是进度悄悄回到开头。
+     */
+    pendingSeek = currentTime.value;
+    void start();
   }
 
   /** 播放模式的统一视图：由底层的 repeat + shuffle 两个状态推导而来。 */
@@ -551,11 +607,11 @@ export const usePlayerStore = defineStore('player', () => {
       toast.info('这首歌在另一平台没有找到对应资源');
       return;
     }
-    const position = currentTime.value;
+    // 换音源同样要保持进度：起播位置走 pendingSeek（同 setQuality）。
+    pendingSeek = currentTime.value;
     preferredPlatform.value = platform;
     persist();
     await start();
-    if (position > 1) seek(position);
   }
 
   function toggleExpanded(): void {
@@ -595,7 +651,11 @@ export const usePlayerStore = defineStore('player', () => {
         index.value = -1;
         void stop();
       } else {
+        // 顶上来的是一首新歌：进度得从 0 起，别把被移除那首的位置带过去。
         index.value = Math.min(position, queue.value.length - 1);
+        pendingSeek = 0;
+        currentTime.value = 0;
+        duration.value = 0;
         void start();
       }
     }
@@ -605,6 +665,7 @@ export const usePlayerStore = defineStore('player', () => {
   async function playAt(position: number): Promise<void> {
     if (position < 0 || position >= queue.value.length) return;
     index.value = position;
+    pendingSeek = 0;
     currentTime.value = 0;
     duration.value = 0;
     await start();
@@ -612,6 +673,10 @@ export const usePlayerStore = defineStore('player', () => {
 
   function stop(): void {
     const element = ensureAudio();
+    // 清空现场：下次起播从头开始，别继承上一首的进度。
+    pendingSeek = 0;
+    // 作废可能还在路上的那次加载，否则它回来时会把刚停掉的东西又播上。
+    loadToken += 1;
     element.pause();
     element.removeAttribute('src');
     // 只重置媒体元素状态，不触发 error 事件处理（error 监听里已对空 src 做了短路）。

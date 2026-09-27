@@ -167,7 +167,7 @@ function retryDirect(): void {
       </div>
       <ul class="muted" style="font-size: 12.5px; line-height: 1.9; margin: 0; padding-left: 20px">
         <li>聚合网关自身不存储任何音频文件，音频均由网关按需代理两个平台的官方 CDN 流。</li>
-        <li>网易云部分接口由 api-enhanced 提供，QQ 音乐部分由 QQMusicApi 提供，两者均保持原样运行。</li>
+        <li>网易云部分接口由第三方项目 api-enhanced 提供；QQ 音乐部分由本仓库自带的 qq-upstream 提供，它只依赖发布版 qqmusic-api-python。</li>
         <li>登录 Sakura 的会话使用 HttpOnly Cookie + 服务端 Session，密码使用 scrypt 加盐散列。</li>
         <li>音乐版权归各平台所有，本项目仅供个人学习与研究使用。</li>
       </ul>

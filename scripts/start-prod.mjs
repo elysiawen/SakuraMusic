@@ -6,14 +6,13 @@
  *   2. 前端跑 `web/dist` 静态产物（内置静态服务 + /api 反代），而不是 Vite dev server；
  *   3. 缺产物时会先自动执行 `pnpm build`。
  *
- * 会拉起：网易云上游 :3700、QQ 音乐上游 :8080、网关 :8787、前端 :6173，
- * 以及可选的 QQ 音乐 App 扫码 sidecar :8090。
+ * 会拉起：网易云上游 :3700、QQ 音乐上游（自建）:8080、网关 :8787、前端 :6173。
+ * QQ 音乐上游里同时包含三种扫码登录（含需要 MQTT 长连接的「QQ 音乐 App 扫码」）。
  *
  * 用法：
  *   pnpm start:prod                 自动构建（缺产物时）+ 拉起全部进程
  *   pnpm start:prod --no-build      缺产物直接报错，不自动构建
  *   pnpm start:prod --no-web        不启动内置静态服务（已用 Nginx 托管 web/dist 时）
- *   pnpm start:prod --no-sidecar    不启动 QQ 音乐 App 扫码服务
  *
  * 上线前请准备好 gateway/.env（见 .env.example），特别是 DATABASE_URL 与 CREDENTIAL_KEY；
  * HTTPS 场景由 Nginx/Caddy 终结 TLS，并把 COOKIE_SECURE=true 与 WEB_ORIGIN 设成正式域名。
@@ -30,11 +29,10 @@ const args = process.argv.slice(2);
 const options = {
   build: !args.includes('--no-build'),
   web: !args.includes('--no-web'),
-  sidecar: !args.includes('--no-sidecar'),
 };
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log('用法：pnpm start:prod [--no-build] [--no-web] [--no-sidecar]');
+  console.log('用法：pnpm start:prod [--no-build] [--no-web]');
   process.exit(0);
 }
 
@@ -89,15 +87,6 @@ if (existsSync(resolve(sakuraRoot, 'gateway/.data/credential.key')) && !process.
 
 /* ------------------------------ 进程编排 ------------------------------ */
 
-/** 用 shell 启动的名字（Windows 上是 .cmd/.bat shim，Node 20.12+ 禁止直接 spawn）。 */
-const shim = (name, argv, cwd) => ({ command: name, args: argv, cwd, shell: isWindows });
-
-/** sidecar 复用 QQMusicApi 的 venv 解释器（对 qqmusic_api 是可编辑安装，无需额外依赖）。 */
-const sidecarPython = [
-  resolve(parent, 'QQMusicApi/.venv/Scripts/python.exe'),
-  resolve(parent, 'QQMusicApi/.venv/bin/python'),
-].find((candidate) => existsSync(candidate));
-
 const tasks = [
   {
     name: 'netease',
@@ -112,10 +101,13 @@ const tasks = [
   },
   {
     name: 'qqmusic',
-    label: 'QQ 音乐上游',
+    label: 'QQ 音乐上游（自建）',
     url: 'http://127.0.0.1:8080',
-    ...shim('uv', ['run', '--no-sync', 'web/run.py'], resolve(parent, 'QQMusicApi')),
-    required: resolve(parent, 'QQMusicApi/web/run.py'),
+    // 自建上游不需要 uv：解释器由启动器自己挑（.runtime/qq-upstream-venv 优先）。
+    command: process.execPath,
+    args: [resolve(sakuraRoot, 'scripts/run-qq-upstream.mjs')],
+    cwd: sakuraRoot,
+    shell: false,
   },
   {
     name: 'gateway',
@@ -139,24 +131,8 @@ const tasks = [
         },
       ]
     : []),
-  ...(options.sidecar && sidecarPython
-    ? [
-        {
-          name: 'sidecar',
-          label: '客户端扫码服务',
-          url: 'http://127.0.0.1:8090',
-          command: sidecarPython,
-          args: [resolve(sakuraRoot, 'sidecar/qq_mobile_login.py')],
-          cwd: sakuraRoot,
-          shell: false,
-        },
-      ]
-    : []),
 ];
 
-if (options.sidecar && !sidecarPython) {
-  console.warn('[sakura] 未找到 QQMusicApi 的 venv，跳过「QQ音乐扫码」服务（如需该功能请先 uv sync）。');
-}
 if (!options.web) {
   console.warn(`[sakura] 已跳过内置静态服务，请自行用 Nginx 托管 ${resolve(sakuraRoot, 'web/dist')} 并把 /api 反代到 :8787。`);
 }
@@ -220,7 +196,7 @@ console.log(`
  Sakura Music 生产模式已启动（按 Ctrl+C 一并关闭）
    前端入口   ${options.web ? `http://${webHost}:${webPort}` : '（已跳过，见上方提示）'}
    网关接口   http://127.0.0.1:8787/api/health
-   扫码服务   http://127.0.0.1:8090/health  （QQ 音乐 App 扫码）
+   QQ 音乐上游 http://127.0.0.1:8080/health   （自建，含「QQ 音乐 App 扫码」的 MQTT 会话）
  首次启动请等待 10~30 秒，待上游就绪后再打开前端。
  长期运行建议交给进程守护：Linux 用 systemd，Windows 用 NSSM/WinSW 或 pm2。
 ──────────────────────────────────────────────

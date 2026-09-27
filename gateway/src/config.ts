@@ -98,8 +98,6 @@ export const config = {
   credentialKey: loadCredentialKey(),
   neteaseBaseUrl: (process.env.NETEASE_BASE_URL?.trim() || 'http://127.0.0.1:3700').replace(/\/+$/, ''),
   qqBaseUrl: (process.env.QQ_BASE_URL?.trim() || 'http://127.0.0.1:8080').replace(/\/+$/, ''),
-  /** QQ 音乐客户端（App）扫码登录 sidecar，见 sidecar/qq_mobile_login.py。 */
-  qqSidecarBaseUrl: (process.env.QQ_SIDECAR_BASE_URL?.trim() || 'http://127.0.0.1:8090').replace(/\/+$/, ''),
   qqStreamHost: process.env.QQ_STREAM_HOST?.trim() || 'https://ws.stream.qqmusic.qq.com/',
   webOrigins: (process.env.WEB_ORIGIN?.trim() || 'http://localhost:5173')
     .split(',')

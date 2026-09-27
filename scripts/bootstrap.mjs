@@ -3,9 +3,9 @@
  * 一键部署：把刚克隆下来的仓库准备到「直接能跑」的状态。
  *
  * 依次做五件事：
- *   1. 环境自检（Node / git / pnpm / uv）
- *   2. 把两个上游克隆到本仓库的**同级目录**——网关按这个约定去找它们
- *   3. 安装依赖（本仓库 / api-enhanced / QQMusicApi）
+ *   1. 环境自检（Node / git / pnpm / Python）
+ *   2. 把网易云上游克隆到本仓库的**同级目录**——网关按这个约定去找它
+ *   3. 安装依赖（本仓库 / api-enhanced），并按 qq-upstream/requirements.txt 准备 Python 虚拟环境
  *   4. 生成 gateway/.env（自动写入随机 CREDENTIAL_KEY）
  *   5. 连一次数据库并幂等建表，把配置问题提前暴露出来
  *
@@ -15,8 +15,9 @@
  *   node scripts/bootstrap.mjs --no-pull     上游已存在时不做 git pull
  *   node scripts/bootstrap.mjs --db=<url>    非交互指定数据库连接串
  *
- * 关于两个上游：它们是各自独立的第三方项目（QQMusicApi 是 GPL-3.0），
- * 本脚本只把它们克隆到**同级目录、以独立进程运行**，不把源码并入本仓库。
+ * 关于上游：网易云用第三方项目 api-enhanced（克隆到同级目录、独立进程运行，源码不并入本仓库）；
+ * QQ 音乐用本仓库自带的 `qq-upstream/` —— 它只依赖 PyPI 发布版 `qqmusic-api-python`，
+ * 所以既不必克隆 QQMusicApi 仓库，也不再需要 uv。
  */
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -58,17 +59,24 @@ const UPSTREAMS = [
     label: '网易云上游',
     url: 'https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git',
     install: { command: 'pnpm', args: ['install'] },
-    requires: null,
-  },
-  {
-    name: 'QQMusicApi',
-    label: 'QQ 音乐上游',
-    url: 'https://github.com/L-1124/QQMusicApi.git',
-    install: { command: 'uv', args: ['sync'] },
-    // Python 项目，缺 uv 装不了依赖，届时跳过并提示。
-    requires: 'uv',
   },
 ];
+
+/** QQ 上游（本仓库自带）的虚拟环境位置与依赖清单。 */
+const QQ_VENV = resolve(root, '.runtime/qq-upstream-venv');
+const QQ_REQUIREMENTS = resolve(root, 'qq-upstream/requirements.txt');
+
+/**
+ * 找一个可用的 Python。
+ * 优先 `python3`（Linux / macOS 的惯例），再退回 `python`（Windows 上通常是 launcher）。
+ */
+function findPython() {
+  for (const candidate of ['python3', 'python']) {
+    const probe = capture(candidate, ['--version']);
+    if (probe.ok) return { command: candidate, version: probe.text };
+  }
+  return null;
+}
 
 /* ------------------------------ 输出小工具 ------------------------------ */
 
@@ -121,31 +129,26 @@ function checkEnvironment() {
   }
   ok(`pnpm ${pnpm.text}`);
 
-  const uv = capture('uv', ['--version']);
-  if (uv.ok) {
-    ok(`uv ${uv.text}`);
+  const python = findPython();
+  if (python) {
+    ok(`${python.command} ${python.version}`);
   } else {
     warn(
-      '未找到 uv，将跳过 QQ 音乐上游（只影响 QQ 音乐的搜索与播放）。' +
-        '安装：macOS/Linux 用 `curl -LsSf https://astral.sh/uv/install.sh | sh`，Windows 用 powershell 执行 https://astral.sh/uv/install.ps1',
+      '未找到 Python 3.10+，QQ 音乐上游与「QQ音乐扫码」都将不可用（其余功能不受影响）。' +
+        '安装后重跑本脚本即可：Windows 见 https://www.python.org/downloads/，Linux 用 apt/dnf 安装 python3。',
     );
   }
 
-  return { uv: uv.ok };
+  return { python: Boolean(python) };
 }
 
 /* ------------------------------ 2. 上游仓库 ------------------------------ */
 
-function prepareUpstreams(available) {
-  console.log('\n[2/5] 准备两个上游项目（放在本仓库的同级目录）');
+function prepareUpstreams() {
+  console.log('\n[2/5] 准备网易云上游项目（放在本仓库的同级目录）');
   const prepared = [];
 
   for (const upstream of UPSTREAMS) {
-    if (upstream.requires === 'uv' && !available.uv) {
-      warn(`跳过 ${upstream.label}（缺 uv）`);
-      continue;
-    }
-
     const dir = resolve(parent, upstream.name);
 
     if (existsSync(resolve(dir, '.git'))) {
@@ -169,13 +172,46 @@ function prepareUpstreams(available) {
     prepared.push({ ...upstream, dir });
   }
 
-  if (prepared.length === 0) fail('两个上游都不可用，无法继续');
+  if (prepared.length === 0) fail('网易云上游不可用，无法继续');
   return prepared;
+}
+
+/* ------------------------------ 3b. QQ 上游的 Python 环境 ------------------------------ */
+
+/**
+ * 准备 QQ 上游的虚拟环境。
+ *
+ * 放在仓库内的 `.runtime/`（已被 gitignore）：与 QQMusicApi 仓库彻底解耦，
+ * 里面只装 `qq-upstream/requirements.txt` 钉住的发布版依赖。
+ * 注意 requirements.txt 必须是**纯 ASCII** —— pip 在 Windows 上按本地编码读它。
+ */
+function prepareQqEnvironment() {
+  const python = findPython()?.command ?? 'python';
+  const venvPython = resolve(QQ_VENV, isWindows ? 'Scripts/python.exe' : 'bin/python');
+
+  if (!existsSync(venvPython)) {
+    info('创建 QQ 上游虚拟环境（python -m venv .runtime/qq-upstream-venv）…');
+    if (!run(python, ['-m', 'venv', QQ_VENV], root)) {
+      warn('虚拟环境创建失败，QQ 音乐上游将退回使用系统 python（需自带 qqmusic-api-python==0.7.3）');
+      return;
+    }
+  }
+
+  info('安装 QQ 上游依赖（pip install -r qq-upstream/requirements.txt）…');
+  if (
+    !run(
+      venvPython,
+      ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '-q', '-r', QQ_REQUIREMENTS],
+      root,
+    )
+  ) {
+    warn('QQ 上游依赖安装失败，可稍后在 qq-upstream 目录手动执行同一条 pip 命令');
+  }
 }
 
 /* ------------------------------ 3. 安装依赖 ------------------------------ */
 
-function installDependencies(prepared) {
+function installDependencies(prepared, available) {
   console.log('\n[3/5] 安装依赖');
 
   info('本仓库（pnpm install）…');
@@ -187,6 +223,12 @@ function installDependencies(prepared) {
       warn(`${upstream.name} 依赖安装失败，它可能起不来（其余部分不受影响）`);
     }
   }
+
+  if (!available.python) {
+    warn('跳过 QQ 上游的 Python 环境（未找到 Python）');
+    return;
+  }
+  prepareQqEnvironment();
 }
 
 /* ------------------------------ 4. 生成 gateway/.env ------------------------------ */
@@ -254,14 +296,14 @@ async function main() {
   console.log('Sakura Music 一键部署');
 
   const available = checkEnvironment();
-  const prepared = prepareUpstreams(available);
-  installDependencies(prepared);
+  const prepared = prepareUpstreams();
+  installDependencies(prepared, available);
   await ensureEnvFile();
   const dbReady = initDatabase();
 
   console.log('\n──────────────────────────────────────────────');
   console.log(dbReady && warnings === 0 ? ' 准备完成' : ` 准备完成（有 ${warnings} 处需要留意，见上面的 ! 提示）`);
-  console.log(` 上游就绪：${prepared.map((item) => item.name).join('、')}`);
+  console.log(` 上游就绪：${prepared.map((item) => item.name).join('、')}、qq-upstream（自建 QQ 上游）`);
   console.log(' 下一步：pnpm start:all');
   console.log(' 然后打开 http://localhost:5173 注册第一个账号（会自动成为 admin），');
   console.log(' 再到「账户中心」扫码绑定网易云 / QQ 音乐。');

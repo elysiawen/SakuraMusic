@@ -74,7 +74,7 @@ export async function startBind(platform: Platform, loginType?: string): Promise
   }
 
   const code = await qq.qrCode(type);
-  if (!code.identifier) throw upstreamError('QQ 音乐未返回二维码标识，请确认 QQMusicApi 的 web 服务已启动', 502);
+  if (!code.identifier) throw upstreamError('QQ 音乐未返回二维码标识，请确认 QQ 音乐上游（pnpm start:qq）已启动', 502);
   return { platform, identifier: code.identifier, qrImage: code.img, loginType: type };
 }
 
@@ -130,7 +130,7 @@ export async function pollBind(
   }
 
   const type = resolveQqLoginType(loginType);
-  // 手机端扫码的状态由 sidecar 通过 MQTT 持续接收，这里只是读它内存里的最新事件。
+  // 手机端扫码的状态由上游通过 MQTT 持续接收，这里只是读它内存里的最新事件。
   const result = type === 'mobile' ? await qq.mobileQrCheck(identifier) : await qq.qrCheck(identifier, type);
   if (result.status !== 'success' || !result.credential) {
     // message 要一并透传，否则手机端扫码的后台异常会被前端当成「还在等待」。

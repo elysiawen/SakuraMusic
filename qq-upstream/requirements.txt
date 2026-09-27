@@ -1,0 +1,13 @@
+# Dependencies of the self-hosted QQ Music upstream service.
+#
+# NOTE: keep this file ASCII-only. pip reads requirements.txt with the locale
+# codec on Windows (cp936/GBK here), and a non-ASCII comment crashes it with
+# UnicodeDecodeError before it even starts resolving packages.
+#
+# The SDK version is pinned on purpose: the local QQMusicApi checkout sits on a
+# dev branch (v0.7.3-36, with a breaking web refactor and a rewritten request
+# core) and does not behave like the released build. The release is the one
+# that has actually been verified to work.
+qqmusic-api-python==0.7.3
+fastapi>=0.115
+uvicorn>=0.30

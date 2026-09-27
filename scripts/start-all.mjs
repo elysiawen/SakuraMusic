@@ -1,12 +1,13 @@
 /**
  * 一键拉起全部进程（不使用 Docker）：
  *   1. 网易云上游 api-enhanced          -> http://127.0.0.1:3700
- *   2. QQ 音乐上游 QQMusicApi (FastAPI)  -> http://127.0.0.1:8080
+ *   2. QQ 音乐上游 qq-upstream（自建）   -> http://127.0.0.1:8080
+ *      （三种扫码登录也在这里，包括需要 MQTT 长连接的「QQ 音乐 App 扫码」）
  *   3. Sakura 网关                       -> http://127.0.0.1:8787
  *   4. Sakura 前端（Vite dev server）    -> http://localhost:5173
  *
  * Windows 注意：Node 20.12+ / 22 出于安全考虑禁止直接 spawn `.cmd` / `.bat`（会抛 EINVAL），
- * 所以 pnpm、uv 这类 shim 必须经由 shell 启动；node.exe 则直接 spawn。
+ * 所以 pnpm 这类 shim 必须经由 shell 启动；node.exe 则直接 spawn。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -23,15 +24,6 @@ const shim = (name, args, cwd) => ({
   cwd,
   shell: isWindows,
 });
-
-/**
- * sidecar 直接使用 QQMusicApi 的 venv 解释器（对 qqmusic_api 是「可编辑安装」，
- * 因此能用上官方 SDK，且不需要额外装依赖）。
- */
-const sidecarPython = [
-  resolve(parent, 'QQMusicApi/.venv/Scripts/python.exe'),
-  resolve(parent, 'QQMusicApi/.venv/bin/python'),
-].find((candidate) => existsSync(candidate));
 
 /** 网易云上游端口：默认 3700，需要时用 NETEASE_PORT 覆盖（同时改 gateway/.env 的 NETEASE_BASE_URL）。 */
 const neteasePort = process.env.NETEASE_PORT?.trim() || '3700';
@@ -50,10 +42,13 @@ const tasks = [
   },
   {
     name: 'qqmusic',
-    label: 'QQ 音乐上游',
+    label: 'QQ 音乐上游（自建）',
     url: 'http://127.0.0.1:8080',
-    ...shim('uv', ['run', '--no-sync', 'web/run.py'], resolve(parent, 'QQMusicApi')),
-    required: resolve(parent, 'QQMusicApi/web/run.py'),
+    // 走自己的启动器：解释器选择与端口覆盖都在里面（不再依赖 uv 与 QQMusicApi 仓库）。
+    command: process.execPath,
+    args: [resolve(sakuraRoot, 'scripts/run-qq-upstream.mjs')],
+    cwd: sakuraRoot,
+    shell: false,
   },
   {
     name: 'gateway',
@@ -68,28 +63,7 @@ const tasks = [
     url: 'http://localhost:5173',
     ...shim('pnpm', ['--filter=@sakura/web', 'dev'], sakuraRoot),
   },
-  // QQ 音乐客户端（App）扫码需要 sidecar 维持 MQTT 长连接；缺 venv 时跳过，不影响其他扫码方式。
-  ...(sidecarPython
-    ? [
-        {
-          name: 'sidecar',
-          label: '客户端扫码服务',
-          url: 'http://127.0.0.1:8090',
-          command: sidecarPython,
-          args: [resolve(sakuraRoot, 'sidecar/qq_mobile_login.py')],
-          cwd: sakuraRoot,
-          shell: false,
-        },
-      ]
-    : []),
 ];
-
-if (!sidecarPython) {
-  console.warn(
-    '[sakura] 未找到 QQMusicApi 的 venv，跳过「QQ音乐扫码」服务；' +
-      '如需该功能请先在 QQMusicApi 目录执行 uv sync。',
-  );
-}
 
 const children = [];
 
@@ -150,7 +124,7 @@ console.log(`
  Sakura Music 已启动（按 Ctrl+C 一并关闭）
    前端入口   http://localhost:5173
    网关接口   http://127.0.0.1:8787/api/health
-   扫码服务   http://127.0.0.1:8090/health  （QQ 音乐 App 扫码）
+   QQ 音乐上游 http://127.0.0.1:8080/health   （自建，会报出实际加载的 SDK 版本）
  首次启动请等待 10~30 秒，待上游就绪后再打开前端。
 ──────────────────────────────────────────────
 `);
