@@ -575,6 +575,29 @@ export const useConnectStore = defineStore('connect', () => {
   let syncing = false;
 
   /**
+   * 沿跟随链走到源头，返回真正该对的那台设备的 id。
+   *
+   * 目标自己也在跟随别人时（B 跟 C、本机跟 B），本机该对的是链尾那台：
+   * 中间每一台都只是镜像，跟着它等于把它的残差再叠一层，源头换歌时还要多等一次转发。
+   *
+   * 三种情况都停在当前这台：它没有跟随任何人（它就是源头）、下游不在设备列表里
+   * （离线或还没入册，只能先跟眼前这台）、下游已经在来路上出现过（成环或指回本机，
+   * 再往下就找不到源头了）。
+   */
+  function resolveFollowSource(id: string): string {
+    const seen = new Set<string>([deviceId.value, id]);
+    let current = id;
+
+    for (;;) {
+      const next = devices.value.find((item) => item.deviceId === current)?.state?.following;
+      if (!next || seen.has(next)) return current;
+      if (!devices.value.some((item) => item.deviceId === next)) return current;
+      seen.add(next);
+      current = next;
+    }
+  }
+
+  /**
    * 跟上目标设备的进度。
    *
    * 由 devices 广播驱动：每收到一份新状态就比对一次，不一致才动手。
@@ -584,10 +607,18 @@ export const useConnectStore = defineStore('connect', () => {
    * 频繁 seek 带来的卡顿，比差个一两秒难受得多。
    */
   async function syncToLeader(): Promise<void> {
-    const target = following.value;
-    if (!target || syncing) return;
+    if (!following.value || syncing) return;
 
     const player = usePlayerStore();
+
+    /*
+     * 目标自己也在跟别人时改对源头（见 resolveFollowSource）。
+     * 关系真的往源头挪了才写回 following：它一变就会上报，
+     * 面板上的「正在跟随 X」与「谁跟着谁」因此都跟着实际对的那台走。
+     */
+    const target = resolveFollowSource(following.value);
+    if (target !== following.value) following.value = target;
+
     const leader = devices.value.find((item) => item.deviceId === target);
 
     /*
@@ -653,21 +684,32 @@ export const useConnectStore = defineStore('connect', () => {
   /**
    * 跟随某台设备播放。
    *
+   * 跟的是一台「正在跟别人」的设备时，直接对到链尾的源头（见 resolveFollowSource）：
+   * 跟中间那台只是让别人多镜像一跳，没有意义。
+   *
    * 是只读镜像：跟随期间本机的传输控制不会转发给对方（想自己控制就先停止跟随）。
    * 这样不必去拦播放条上的每一个按钮，语义也更清楚。
    */
   function follow(device: ConnectDevice): void {
     if (device.deviceId === deviceId.value) return;
+
+    const sourceId = resolveFollowSource(device.deviceId);
+    const source = devices.value.find((item) => item.deviceId === sourceId) ?? device;
+
     /*
-     * 防循环：对方正在跟随本机的话，先请它停止。
+     * 防循环：源头正在跟随本机的话，先请它停止。
      *
      * 双向互跟没有意义 —— 两边都是镜像、谁都没有权威，有偏差时只会互相拉扯；
      * 而且面板上「跟随它」和「跟随我」会同时点亮，看起来就像个 bug。
      */
-    if (device.state?.following === deviceId.value) void control(device.deviceId, 'unfollow');
+    if (source.state?.following === deviceId.value) void control(source.deviceId, 'unfollow');
     leaderMissingSince = null;
-    following.value = device.deviceId;
-    toast.success(`已跟随「${device.name}」播放`);
+    following.value = source.deviceId;
+    toast.success(
+      sourceId === device.deviceId
+        ? `已跟随「${source.name}」播放`
+        : `「${device.name}」跟随的是「${source.name}」，已直接跟随源头`,
+    );
     void syncToLeader();
   }
 

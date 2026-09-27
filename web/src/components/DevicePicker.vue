@@ -460,12 +460,48 @@ function commitRename(): void {
   box-shadow: var(--shadow-lg);
 }
 
+/*
+ * 面板的高度上限。
+ *
+ * 面板是绝对定位的，高度不受父级约束 —— 设备一多、或者点开「跟随它」后多出那条
+ * 跟随提示条，它就会一路长到屏幕底部的播放控件上，把进度条压住。
+ * 所以按展开方向算清「还剩多少高度可用」，超出的部分交给 .device-list 自己滚动。
+ */
 .device-panel.is-up {
   bottom: calc(100% + 10px);
+  /* 播放条贴着屏幕底：减掉它自身的高度与一点间隙，剩下的都是面板可用的。 */
+  max-height: calc(100vh - 128px);
+  max-height: calc(100dvh - 128px);
+  /* 弹出动画：沿用全局的 pop-in，时长与缓动跟队列面板保持一致。 */
+  animation: pop-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
 }
 
 .device-panel.is-down {
   top: calc(100% + 10px);
+  /*
+   * 全屏歌词页：面板从顶栏往下长，减去上下两段就够 ——
+   * 顶栏（安全区 + 20px 内边距 + 36px 按钮 + 10px 间隙 ≈ 66px）与
+   * 底部播放控件（进度条 + 控制键 + 键盘提示 ≈ 134px），再留一点余量。
+   */
+  max-height: calc(100vh - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 210px);
+  max-height: calc(100dvh - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 210px);
+  /*
+   * 顶栏里的面板朝下展开，所以要从上方落下来 ——
+   * 全局那个 pop-in 是自下而上的，用在这里方向反了。
+   */
+  animation: pop-in-down 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
+}
+
+/* 与全局 pop-in 只差位移方向：面板长在锚点下方，从上面落下来才像是从那个按钮里长出来的。 */
+@keyframes pop-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* 面板从锚点的哪一侧展开：锚点靠屏幕右边用 end（朝左展开），靠左边用 start（朝右展开）。 */
@@ -507,8 +543,19 @@ function commitRename(): void {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: min(60vh, 460px);
+  /*
+   * 高度由上面面板的 max-height 封顶：列表自己吃掉剩下的空间，装不下就滚动，
+   * 而不是把面板撑出屏幕。
+   */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+}
+
+/* 封顶之后只有列表该让出空间：标题与跟随提示条保持自身高度，别被挤成半行。 */
+.device-panel-head,
+.device-following {
+  flex: none;
 }
 
 .device-empty {

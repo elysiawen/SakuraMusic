@@ -180,149 +180,155 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="platform" class="modal-mask" @click.self="close()">
-    <div class="modal" style="width: min(520px, 100%)">
-      <div class="between">
-        <div class="stack" style="gap: 2px">
-          <h3 class="modal-title">登录{{ platformLabel }}</h3>
-          <span class="muted" style="font-size: 12px">
-            使用你自己的账号，播放与推荐才会按你的偏好生效
-          </span>
-        </div>
-        <button class="icon-btn" type="button" @click="close()"><AppIcon name="close" /></button>
-      </div>
-
-      <!-- 第一步：扫码 -->
-      <template v-if="step === 'loading' || step === 'scan'">
-        <div class="qr-area">
-          <div class="qr-frame">
-            <div v-if="step === 'loading'" class="qr-loading">
-              <AppIcon name="refresh" :size="26" class="spin" />
-            </div>
-            <img v-else :src="qrImage" alt="登录二维码" />
-          </div>
-          <p class="muted" style="text-align: center; margin: 14px 0 0">
-            {{ step === 'loading' ? '正在获取二维码…' : statusText[status] }}
-          </p>
-          <p class="muted" style="text-align: center; font-size: 12px; margin: 6px 0 0">
-            {{ scanHint }}
-          </p>
-          <p v-if="message" class="muted" style="text-align: center; font-size: 12px; margin: 4px 0 0">
-            {{ message }}
-          </p>
-
-          <div
-            v-if="showLoginTypePicker"
-            class="row"
-            style="justify-content: center; gap: 8px; margin-top: 12px; flex-wrap: wrap"
-          >
-            <button
-              class="chip"
-              :class="{ 'is-active': loginType === 'qq' }"
-              type="button"
-              :disabled="step === 'loading'"
-              @click="changeLoginType('qq')"
-            >
-              手机 QQ 扫码
-            </button>
-            <button
-              class="chip"
-              :class="{ 'is-active': loginType === 'wx' }"
-              type="button"
-              :disabled="step === 'loading'"
-              @click="changeLoginType('wx')"
-            >
-              微信扫码
-            </button>
-            <button
-              class="chip"
-              :class="{ 'is-active': loginType === 'mobile' }"
-              type="button"
-              :disabled="step === 'loading'"
-              @click="changeLoginType('mobile')"
-            >
-              QQ音乐扫码
-            </button>
-          </div>
-
-          <div
-            v-if="status === 'expired' || status === 'refused' || status === 'error'"
-            class="row"
-            style="justify-content: center; margin-top: 14px"
-          >
-            <button class="btn btn-primary" type="button" @click="start">
-              <AppIcon name="refresh" :size="14" />
-              刷新二维码
-            </button>
-          </div>
-        </div>
-      </template>
-
-      <!-- 第二步：强制选择存储位置 -->
-      <template v-else>
-        <div class="row" style="gap: 12px; margin: 16px 0 4px">
-          <span class="avatar" style="width: 46px; height: 46px; background: linear-gradient(135deg, var(--brand-300), var(--brand-600))">
-            <img v-if="profile?.avatar" :src="profile.avatar" alt="" />
-            <template v-else>{{ (profile?.nickname ?? 'S').slice(0, 1) }}</template>
-          </span>
+  <!--
+    Teleport 到 body：账户页里这个弹窗长在路由组件内部，而路由组件带着 transform 动画（fade-in），
+    祖先一旦有 transform 就成了 fixed 的包含块 —— 遮罩只会盖住内容区，盖不到侧栏与播放条（同 CreatePlaylistDialog）。
+  -->
+  <Teleport to="body">
+    <div v-if="platform" class="modal-mask" @click.self="close()">
+      <div class="modal" style="width: min(520px, 100%)">
+        <div class="between">
           <div class="stack" style="gap: 2px">
-            <strong>{{ profile?.nickname ?? platformLabel + ' 用户' }}</strong>
+            <h3 class="modal-title">登录{{ platformLabel }}</h3>
             <span class="muted" style="font-size: 12px">
-              {{ platformLabel }}登录成功，请选择凭据保存在哪里
+              使用你自己的账号，播放与推荐才会按你的偏好生效
             </span>
           </div>
+          <button class="icon-btn" type="button" @click="close()"><AppIcon name="close" /></button>
         </div>
 
-        <div class="mode-grid">
-          <button
-            type="button"
-            class="mode-card"
-            :class="{ 'is-selected': selectedMode === 'server' }"
-            @click="selectedMode = 'server'"
-          >
-            <AppIcon name="server" :size="22" />
-            <strong>保存在服务器</strong>
-            <span class="muted">
-              凭据经 AES-256-GCM 加密后入库，换设备、换浏览器都能直接用，无需重新扫码。
+        <!-- 第一步：扫码 -->
+        <template v-if="step === 'loading' || step === 'scan'">
+          <div class="qr-area">
+            <div class="qr-frame">
+              <div v-if="step === 'loading'" class="qr-loading">
+                <AppIcon name="refresh" :size="26" class="spin" />
+              </div>
+              <img v-else :src="qrImage" alt="登录二维码" />
+            </div>
+            <p class="muted" style="text-align: center; margin: 14px 0 0">
+              {{ step === 'loading' ? '正在获取二维码…' : statusText[status] }}
+            </p>
+            <p class="muted" style="text-align: center; font-size: 12px; margin: 6px 0 0">
+              {{ scanHint }}
+            </p>
+            <p v-if="message" class="muted" style="text-align: center; font-size: 12px; margin: 4px 0 0">
+              {{ message }}
+            </p>
+
+            <div
+              v-if="showLoginTypePicker"
+              class="row"
+              style="justify-content: center; gap: 8px; margin-top: 12px; flex-wrap: wrap"
+            >
+              <button
+                class="chip"
+                :class="{ 'is-active': loginType === 'qq' }"
+                type="button"
+                :disabled="step === 'loading'"
+                @click="changeLoginType('qq')"
+              >
+                手机 QQ 扫码
+              </button>
+              <button
+                class="chip"
+                :class="{ 'is-active': loginType === 'wx' }"
+                type="button"
+                :disabled="step === 'loading'"
+                @click="changeLoginType('wx')"
+              >
+                微信扫码
+              </button>
+              <button
+                class="chip"
+                :class="{ 'is-active': loginType === 'mobile' }"
+                type="button"
+                :disabled="step === 'loading'"
+                @click="changeLoginType('mobile')"
+              >
+                QQ音乐扫码
+              </button>
+            </div>
+
+            <div
+              v-if="status === 'expired' || status === 'refused' || status === 'error'"
+              class="row"
+              style="justify-content: center; margin-top: 14px"
+            >
+              <button class="btn btn-primary" type="button" @click="start">
+                <AppIcon name="refresh" :size="14" />
+                刷新二维码
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 第二步：强制选择存储位置 -->
+        <template v-else>
+          <div class="row" style="gap: 12px; margin: 16px 0 4px">
+            <span class="avatar" style="width: 46px; height: 46px; background: linear-gradient(135deg, var(--brand-300), var(--brand-600))">
+              <img v-if="profile?.avatar" :src="profile.avatar" alt="" />
+              <template v-else>{{ (profile?.nickname ?? 'S').slice(0, 1) }}</template>
             </span>
-          </button>
-          <button
-            type="button"
-            class="mode-card"
-            :class="{ 'is-selected': selectedMode === 'local' }"
-            @click="selectedMode = 'local'"
-          >
-            <AppIcon name="device" :size="22" />
-            <strong>仅保存在本机</strong>
-            <span class="muted">
-              凭据只写入浏览器 IndexedDB，请求时临时透传，服务器不落库、不记录；换设备需重新扫码。
-            </span>
-          </button>
-        </div>
+            <div class="stack" style="gap: 2px">
+              <strong>{{ profile?.nickname ?? platformLabel + ' 用户' }}</strong>
+              <span class="muted" style="font-size: 12px">
+                {{ platformLabel }}登录成功，请选择凭据保存在哪里
+              </span>
+            </div>
+          </div>
 
-        <p class="muted" style="font-size: 12px; margin: 12px 0 0">
-          <AppIcon name="lock" :size="12" />
-          {{
-            selectedMode === 'local'
-              ? '已选择仅本机：服务器不会保存你的第三方登录态。'
-              : '已选择服务器保存：可在设置页随时解绑并删除。'
-          }}
-        </p>
+          <div class="mode-grid">
+            <button
+              type="button"
+              class="mode-card"
+              :class="{ 'is-selected': selectedMode === 'server' }"
+              @click="selectedMode = 'server'"
+            >
+              <AppIcon name="server" :size="22" />
+              <strong>保存在服务器</strong>
+              <span class="muted">
+                凭据经 AES-256-GCM 加密后入库，换设备、换浏览器都能直接用，无需重新扫码。
+              </span>
+            </button>
+            <button
+              type="button"
+              class="mode-card"
+              :class="{ 'is-selected': selectedMode === 'local' }"
+              @click="selectedMode = 'local'"
+            >
+              <AppIcon name="device" :size="22" />
+              <strong>仅保存在本机</strong>
+              <span class="muted">
+                凭据只写入浏览器 IndexedDB，请求时临时透传，服务器不落库、不记录；换设备需重新扫码。
+              </span>
+            </button>
+          </div>
 
-        <div class="modal-actions">
-          <button class="btn" type="button" @click="close()">稍后再说</button>
-          <button
-            class="btn btn-primary"
-            type="button"
-            :disabled="!selectedMode || step === 'saving'"
-            @click="commit"
-          >
-            {{ step === 'saving' ? '保存中…' : '确认绑定' }}
-          </button>
-        </div>
-      </template>
+          <p class="muted" style="font-size: 12px; margin: 12px 0 0">
+            <AppIcon name="lock" :size="12" />
+            {{
+              selectedMode === 'local'
+                ? '已选择仅本机：服务器不会保存你的第三方登录态。'
+                : '已选择服务器保存：可在设置页随时解绑并删除。'
+            }}
+          </p>
+
+          <div class="modal-actions">
+            <button class="btn" type="button" @click="close()">稍后再说</button>
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="!selectedMode || step === 'saving'"
+              @click="commit"
+            >
+              {{ step === 'saving' ? '保存中…' : '确认绑定' }}
+            </button>
+          </div>
+        </template>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
