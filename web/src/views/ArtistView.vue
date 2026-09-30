@@ -6,6 +6,7 @@ import { PLATFORM_LABEL, type ArtistDetail, type Platform } from '@/api/types';
 import AlbumCard from '@/components/AlbumCard.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
+import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
@@ -41,13 +42,14 @@ watch([platform, artistId], load);
 
 <template>
   <div>
-    <div v-if="loading" class="skeleton" style="height: 220px" />
+    <DetailSkeleton v-if="loading" avatar />
 
     <template v-else-if="detail">
-      <section class="page-header">
+      <!-- is-avatar：这个封面是圆形头像，手机端要居中放大，不能按「通栏大图」处理（见 main.css 的 ≤480 段）。 -->
+      <section class="page-header is-avatar">
         <CoverArt
           :src="detail.artist.avatar"
-          :size="148"
+          :size="208"
           radius="999px"
           fallback-icon="user"
           :seed="detail.artist.name"
@@ -77,7 +79,7 @@ watch([platform, artistId], load);
             </template>
           </p>
 
-          <div class="row" style="gap: 8px; margin-top: 6px">
+          <div class="row" style="gap: 8px">
             <button
               class="btn btn-primary"
               type="button"
@@ -115,20 +117,4 @@ watch([platform, artistId], load);
   </div>
 </template>
 
-<style scoped>
-.skeleton {
-  border-radius: var(--radius-lg);
-  background: linear-gradient(90deg, var(--surface), var(--surface-strong), var(--surface));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-}
 
-@keyframes shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-</style>

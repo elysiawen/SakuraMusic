@@ -71,6 +71,20 @@ create table if not exists playlist_tracks (
 );
 create index if not exists playlist_tracks_idx on playlist_tracks (playlist_id, position);
 
+/*
+ * 后补的三列：歌手与专辑的 id / platform。
+ *
+ * 原先只存了歌手名文本与专辑名，于是从歌单里读回来的曲目缺 artist.id / album.id，
+ * 前端「歌手」「专辑」两个链接的判据（name 之外还要有 id 与 platform）不成立，
+ * 只能渲染成纯文本、点不动。收藏与播放历史是同一套列，一并补。
+ *
+ * add column if not exists 让老库同样能升上来 —— 本文件本来就是幂等的迁移脚本。
+ * 老数据补不了 id（当初就没存），重新加一次歌即会有；这里不做回填。
+ */
+alter table playlist_tracks add column if not exists artists_json   jsonb;
+alter table playlist_tracks add column if not exists album_id       text;
+alter table playlist_tracks add column if not exists album_platform text;
+
 create table if not exists favorites (
   id          bigserial   primary key,
   user_id     bigint      not null references users(id) on delete cascade,
@@ -87,6 +101,10 @@ create table if not exists favorites (
 );
 create unique index if not exists favorites_unique on favorites (user_id, platform, track_id);
 
+alter table favorites add column if not exists artists_json   jsonb;
+alter table favorites add column if not exists album_id       text;
+alter table favorites add column if not exists album_platform text;
+
 create table if not exists play_history (
   id          bigserial   primary key,
   user_id     bigint      not null references users(id) on delete cascade,
@@ -102,4 +120,8 @@ create table if not exists play_history (
   played_at   timestamptz not null default now()
 );
 create index if not exists play_history_idx on play_history (user_id, played_at desc);
+
+alter table play_history add column if not exists artists_json   jsonb;
+alter table play_history add column if not exists album_id       text;
+alter table play_history add column if not exists album_platform text;
 `;

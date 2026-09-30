@@ -457,6 +457,71 @@ export async function songlistTracks(
   };
 }
 
+/* --------------------------- 账号自己的音乐库 --------------------------- */
+
+/**
+ * 我喜欢的歌曲。
+ *
+ * 上游那边「我喜欢」就是 `dirid=201` 的一张歌单，响应结构与 `/songlist/{id}/detail`
+ * 完全一致，所以解释方式也一样。只读：这里没有收藏/取消收藏的写回。
+ */
+export async function userFavSongs(
+  page: number,
+  limit: number,
+  cookie: string | null,
+): Promise<{ title: string; cover?: string; total: number; items: UnifiedTrack[] }> {
+  const data = asObj(
+    unwrap(
+      await upstreamJson<RawResponse>(BASE, '/user/fav_song', {
+        cookie,
+        query: { page, num: limit },
+      }),
+      '/user/fav_song',
+    ),
+  );
+  const info = asObj(data.info);
+  return {
+    title: firstStr(info.title, '我喜欢的音乐'),
+    cover: str(info.picurl) || undefined,
+    total: num(data.total),
+    items: mapQqSongs(data.songs),
+  };
+}
+
+/**
+ * 我的歌单：我创建的 + 我收藏的。
+ *
+ * 上游把「我喜欢」也放在「我创建的歌单」里（`dirid=201`），这里照实返回 ——
+ * 前端在「收藏」页已经单独展示过它，但歌单列表里保留它更接近 QQ 客户端的样子。
+ * 两类条目的字段一致（`title` / `picurl` / `songnum` / `id`），可以同一套映射。
+ */
+export async function userPlaylists(cookie: string | null): Promise<PlaylistSummary[]> {
+  const [created, fav] = await Promise.all([
+    upstreamJson<RawResponse>(BASE, '/user/created_songlist', { cookie }),
+    upstreamJson<RawResponse>(BASE, '/user/fav_songlist', { cookie, query: { page: 1, num: 100 } }),
+  ]);
+
+  const items = [
+    ...asArr(asObj(unwrap(created, '/user/created_songlist')).playlists),
+    ...asArr(asObj(unwrap(fav, '/user/fav_songlist')).playlists),
+  ];
+
+  return items
+    .map<PlaylistSummary>((raw) => {
+      const item = asObj(raw);
+      return {
+        platform: PLATFORM,
+        // 自建歌单两类 id 都有（`id` 是 disstid、`dirid` 是目录），优先用前者。
+        id: str(item.id) || str(item.dirid),
+        title: firstStr(item.title, item.name),
+        cover: str(item.picurl) || undefined,
+        description: str(item.desc) || undefined,
+        trackCount: num(item.songnum),
+      };
+    })
+    .filter((item) => item.id && item.title);
+}
+
 /* --------------------------- 歌手 / 专辑详情 --------------------------- */
 
 export interface ArtistBundle {
@@ -506,6 +571,32 @@ export interface AlbumBundle {
 }
 
 /**
+ * 专辑曲目按**专辑内序号**排好。
+ *
+ * QQ 的 `GetAlbumSongList` 给回来的顺序**不是专辑顺序**：实测「太阳之子」13 首是
+ * 「第 2 首 → 第 13 首 → 12 → … → 3 → 第 1 首」这种服务端排序；而 QQ 音乐客户端是自己
+ * 按 `index_album`（专辑内序号，多碟再加 `index_cd`）升序排的。照搬接口顺序，
+ * 用户一眼就能看出和客户端对不上。
+ *
+ * 只排这一页：接口是 begin/num 分页的。`albumBundle` 一次要 200 首，实际专辑极少超过这个量。
+ */
+function sortAlbumSongs(input: unknown): any[] {
+  /** 缺序号（0）的排到最后 —— 宁让它们垫底，也别顶到第 1 首前面。 */
+  const key = (song: Record<string, any>): [number, number] => [
+    num(song.index_cd) || Number.MAX_SAFE_INTEGER,
+    num(song.index_album) || Number.MAX_SAFE_INTEGER,
+  ];
+
+  return asArr(input)
+    .slice()
+    .sort((left, right) => {
+      const [discA, trackA] = key(asObj(left));
+      const [discB, trackB] = key(asObj(right));
+      return discA - discB || trackA - trackB;
+    });
+}
+
+/**
  * 专辑页所需的数据。
  * 注意专辑详情接口不含曲目数，`total_num` 要到曲目接口里取，这里合并进专辑信息。
  */
@@ -524,7 +615,7 @@ export async function albumBundle(value: string, cookie: string | null): Promise
       singer_list: detail.singers,
       total_num: songs.total_num,
     }) ?? { platform: PLATFORM, id: value, name: '未知专辑', artists: [] },
-    items: mapQqSongs(songs.song_list),
+    items: mapQqSongs(sortAlbumSongs(songs.song_list)),
   };
 }
 

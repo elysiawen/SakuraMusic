@@ -494,3 +494,51 @@ export async function qrCheck(key: string): Promise<QrCheckResult> {
     message: firstStr(body.message, body.msg),
   };
 }
+
+/* --------------------------- 账号自己的音乐库 --------------------------- */
+
+/**
+ * 当前凭据对应的账号 ID。
+ *
+ * 网易云的用户库接口都以 `uid` 定位，而 Cookie 里没有 uid，先用 `/login/status` 换一次。
+ * 未登录时它返回的是匿名账号的 id —— 所以调用方必须先确认这个平台真的绑了账号，
+ * 否则查出来的会是匿名账号名下的公开数据（看起来像"空的收藏"，很难排查）。
+ */
+export async function accountId(cookie: string | null): Promise<string> {
+  const body = unwrap(await upstreamJson<RawResponse>('/login/status', { cookie }));
+  return str(asObj(asObj(body.data).account).id);
+}
+
+/** 我的歌单。上游把「我喜欢的音乐」（`specialType=5`）也放在这个列表里。 */
+export async function userPlaylists(
+  uid: string,
+  cookie: string | null,
+  limit = 100,
+  offset = 0,
+): Promise<PlaylistSummary[]> {
+  const body = unwrap(
+    await upstreamJson<RawResponse>('/user/playlist', { cookie, query: { uid, limit, offset } }),
+  );
+  return asArr(asObj(body).playlist)
+    .map(mapNeteasePlaylist)
+    .filter((item) => item.id && item.title);
+}
+
+/** 喜欢的歌曲 ID。`/likelist` 只给 ID 列表，详情要再查一次。 */
+export async function likedSongIds(uid: string, cookie: string | null): Promise<string[]> {
+  const body = unwrap(await upstreamJson<RawResponse>('/likelist', { cookie, query: { uid } }));
+  return asArr(asObj(body).ids)
+    .map((value) => str(value))
+    .filter(Boolean);
+}
+
+/** 按 ID 批量取歌曲详情（`/song/detail` 接受逗号分隔的 ids）。 */
+export async function songsByIds(ids: string[], cookie: string | null): Promise<UnifiedTrack[]> {
+  if (ids.length === 0) return [];
+  const body = unwrap(
+    await upstreamJson<RawResponse>('/song/detail', { cookie, query: { ids: ids.join(',') } }),
+  );
+  return asArr(asObj(body).songs)
+    .map(mapNeteaseSong)
+    .filter((item): item is UnifiedTrack => item !== null);
+}

@@ -5,6 +5,7 @@ import { libraryApi } from '@/api';
 import type { Playlist, UnifiedTrack } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
+import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useConfirm } from '@/composables/useConfirm';
@@ -28,6 +29,52 @@ const draftName = ref('');
 
 const playlistId = computed(() => String(route.params.id ?? ''));
 const totalDuration = computed(() => tracks.value.reduce((sum, track) => sum + track.durationMs, 0));
+
+/*
+ * 歌单内歌曲的排序方式。
+ *   default 保持歌单自己的顺序（库里按 position 存，就是加歌的先后）；
+ *   title   按歌曲名，中文按拼音排（localeCompare 的 zh 排序）；
+ *   artist  按第一组歌手名，同一歌手内再按歌曲名。
+ *
+ * 只影响这一页的显示与播放顺序，**不动库里的 position** ——
+ * 所以点回「默认方式」就能回到原样，不存在"排完就回不去"。
+ * 进另一个歌单时重置为默认（跟随场景恢复，见 load()）。
+ */
+type TrackSortKey = 'default' | 'title' | 'artist';
+
+const trackSortOptions: Array<{ key: TrackSortKey; label: string }> = [
+  { key: 'default', label: '默认方式' },
+  { key: 'title', label: '歌曲名 A-Z' },
+  { key: 'artist', label: '歌手名 A-Z' },
+];
+
+const trackSort = ref<TrackSortKey>('default');
+
+const artistNameOf = (track: UnifiedTrack): string => track.artists[0]?.name ?? '';
+
+const sortedTracks = computed<UnifiedTrack[]>(() => {
+  if (trackSort.value === 'default') return tracks.value;
+
+  const byTitle = (a: UnifiedTrack, b: UnifiedTrack): number =>
+    a.title.localeCompare(b.title, 'zh-Hans-CN');
+
+  const list = [...tracks.value];
+  if (trackSort.value === 'title') return list.sort(byTitle);
+
+  /*
+   * 按歌手名排，同一歌手内再按歌曲名。
+   * 没填歌手的排到最后：空串在字母序里排在任何名字之前，堆在开头会显得像排错了。
+   */
+  return list.sort((a, b) => {
+    const left = artistNameOf(a);
+    const right = artistNameOf(b);
+    if (!left || !right) {
+      if (!left && !right) return byTitle(a, b);
+      return left ? -1 : 1;
+    }
+    return left.localeCompare(right, 'zh-Hans-CN') || byTitle(a, b);
+  });
+});
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -81,20 +128,29 @@ async function remove(): Promise<void> {
 }
 
 onMounted(load);
-watch(playlistId, load);
+
+watch(playlistId, () => {
+  /*
+   * 排序偏好只跟当前这张歌单走：换了歌单回到它自己的顺序。
+   * 重置放在这里而不是 load() 里 —— 移除歌曲后也会调 load() 重新拉数据，
+   * 那时候不该把用户刚选的排序抹掉。
+   */
+  trackSort.value = 'default';
+  void load();
+});
 
 void formatDuration;
 </script>
 
 <template>
   <div>
-    <div v-if="loading" class="skeleton" style="height: 190px" />
+    <DetailSkeleton v-if="loading" />
 
     <template v-else-if="playlist">
       <section class="page-header">
         <CoverArt
           :src="playlist.cover"
-          :size="148"
+          :size="208"
           radius="16px"
           fallback-icon="list"
           :seed="playlist.name"
@@ -110,8 +166,8 @@ void formatDuration;
           <p class="muted" style="margin: 0; font-size: 12.5px">
             {{ tracks.length }} 首 · 总时长 {{ formatDuration(totalDuration) }}
           </p>
-          <div class="row" style="gap: 8px; margin-top: 6px; flex-wrap: wrap">
-            <button class="btn btn-primary" type="button" :disabled="tracks.length === 0" @click="player.playQueue(tracks)">
+          <div class="row" style="gap: 8px; flex-wrap: wrap">
+            <button class="btn btn-primary" type="button" :disabled="tracks.length === 0" @click="player.playQueue(sortedTracks)">
               <AppIcon name="play" :size="14" filled />
               播放全部
             </button>
@@ -137,7 +193,34 @@ void formatDuration;
         </div>
       </section>
 
-      <TrackList v-if="tracks.length > 0" :tracks="tracks" :removable-from="playlist.id" @removed="load" />
+      <!--
+        歌单内歌曲排序：只排"看的顺序"，也顺带决定「播放全部」的播放顺序。
+        不足两首时不显示 —— 没什么可排的。
+      -->
+      <div
+        v-if="tracks.length > 1"
+        class="row"
+        style="gap: 8px; flex-wrap: wrap; margin: 0 0 10px; padding: 0 2px"
+      >
+        <span class="muted" style="font-size: 12px; align-self: center">排序</span>
+        <button
+          v-for="option in trackSortOptions"
+          :key="option.key"
+          class="chip"
+          :class="{ 'is-active': trackSort === option.key }"
+          type="button"
+          @click="trackSort = option.key"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+
+      <TrackList
+        v-if="sortedTracks.length > 0"
+        :tracks="sortedTracks"
+        :removable-from="playlist.id"
+        @removed="load"
+      />
 
       <EmptyState
         v-else
@@ -155,20 +238,4 @@ void formatDuration;
   </div>
 </template>
 
-<style scoped>
-.skeleton {
-  border-radius: var(--radius-lg);
-  background: linear-gradient(90deg, var(--surface), var(--surface-strong), var(--surface));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-}
 
-@keyframes shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-</style>

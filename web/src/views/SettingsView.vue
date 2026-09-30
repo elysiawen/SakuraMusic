@@ -5,7 +5,7 @@ import BackgroundPicker from '@/components/BackgroundPicker.vue';
 import ThemePicker from '@/components/ThemePicker.vue';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
 import { useToast } from '@/composables/useToast';
-import { usePlayerStore } from '@/stores/player';
+import { usePlayerStore, type RouteMode } from '@/stores/player';
 import { useThemeStore } from '@/stores/theme';
 
 /**
@@ -18,6 +18,37 @@ const toast = useToast();
 
 const platforms: Platform[] = ['netease', 'qq'];
 const qualities: Quality[] = ['standard', 'high', 'lossless', 'hires'];
+
+/*
+ * 取流方式按平台分别设置（智能 / 直连 / 中转）。
+ * 文案对齐手机客户端那一组「连接方式」：三项的区别恰恰在"直连不通时怎么办"，
+ * 所以说明里必须写清失败后的行为，只写「直连」「中转」看不出差别。
+ */
+const routeOptions = [
+  { value: 'auto', label: '智能', hint: '直连优先，被 CDN 拒绝时自动改用中转并记住' },
+  { value: 'direct', label: '直连', hint: '始终从平台 CDN 取流；不通就直接失败，不自动改走中转' },
+  { value: 'proxy', label: '中转', hint: '始终经网关转发，用服务器带宽换稳定' },
+];
+
+function chooseRoute(platform: Platform, value: string): void {
+  player.setRouteMode(platform, value as RouteMode);
+}
+
+/**
+ * 「实际走法」与所选档位不一致时补一句提示。
+ *
+ * 只有一种情况需要说：这个平台直连被拒过，而档位不是「中转」——
+ * 此时「智能」实际走的是网关、「直连」则会直接播放失败，跟按钮上选的那个名字对不上。
+ * 正常情况返回空串，不占版面。
+ */
+function routeStatus(platform: Platform): string {
+  if (!player.proxyOnly.includes(platform)) return '';
+  const mode = player.routeModeOf(platform);
+  if (mode === 'proxy') return '';
+  return mode === 'direct'
+    ? '直连被拒过；这个档位不自动回退，播放会直接失败'
+    : '直连被拒过，当前实际走网关中转';
+}
 
 /**
  * 清掉「这个平台直连不通」的记录。
@@ -130,23 +161,38 @@ function retryDirect(): void {
         </div>
 
         <div class="stack" style="gap: 8px">
-          <span class="field-label">音源直连</span>
-          <div class="row" style="gap: 8px; flex-wrap: wrap">
-            <span
-              v-for="platform in platforms"
-              :key="platform"
-              class="tag"
-              :style="{ color: player.proxyOnly.includes(platform) ? 'var(--text-mute)' : 'var(--brand-600)' }"
-            >
-              {{ PLATFORM_LABEL[platform] }} · {{ player.proxyOnly.includes(platform) ? '网关中转' : '直连' }}
+          <span class="field-label">取流方式（按平台分别设置）</span>
+          <div v-for="platform in platforms" :key="platform" class="stack" style="gap: 8px">
+            <span class="muted" style="font-size: 12px; font-weight: 650; padding-left: 2px">
+              {{ PLATFORM_LABEL[platform] }}
             </span>
-            <button v-if="player.proxyOnly.length > 0" class="chip" type="button" @click="retryDirect">
+            <div class="row" style="gap: 8px; flex-wrap: wrap">
+              <button
+                v-for="option in routeOptions"
+                :key="option.value"
+                class="chip"
+                :class="{ 'is-active': player.routeModeOf(platform) === option.value }"
+                type="button"
+                :title="option.hint"
+                @click="chooseRoute(platform, option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <!-- 只有「实际走法」和所选档位不一致（直连被拒过）时才补一句，正常情况不占地方 -->
+            <span v-if="routeStatus(platform)" class="muted" style="font-size: 11.5px; padding-left: 2px">
+              {{ routeStatus(platform) }}
+            </span>
+          </div>
+          <div v-if="player.proxyOnly.length > 0" class="row" style="gap: 8px; flex-wrap: wrap">
+            <button class="chip" type="button" @click="retryDirect">
               <AppIcon name="refresh" :size="13" />
               重新尝试直连
             </button>
+            <span class="muted" style="font-size: 11.5px">清除「直连被拒」的记录，下次播放重新试直连</span>
           </div>
           <span class="muted" style="font-size: 11.5px; padding-left: 2px">
-            能直连时由浏览器自己向平台 CDN 取流，不占服务器带宽；某个平台直连被拒（防盗链、混合内容、当时网络不通）后会被记住并改走网关中转，之后不再重试。点上面的按钮让它们重新试一次。
+            能直连时由浏览器自己向平台 CDN 取流，不占服务器带宽；CDN 会校验来源（防盗链、混合内容），被拒时「智能」会自动改用网关中转并记住这个平台，「直连」直接失败，「中转」始终走网关。
           </span>
         </div>
 

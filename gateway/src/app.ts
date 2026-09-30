@@ -7,6 +7,7 @@ import { registerConnectRoutes } from './routes/connect';
 import { registerCredentialRoutes } from './routes/credentials';
 import { registerLibraryRoutes } from './routes/library';
 import { registerMusicRoutes } from './routes/music';
+import { registerPlatformRoutes } from './routes/platform';
 import { registerStreamRoutes } from './routes/stream';
 
 /** 允许携带 Cookie 的跨域来源白名单（开发环境为 Vite dev server）。 */
@@ -93,6 +94,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await registerCredentialRoutes(app);
   await registerMusicRoutes(app);
   await registerLibraryRoutes(app);
+  await registerPlatformRoutes(app);
   await registerStreamRoutes(app);
   await registerConnectRoutes(app);
 

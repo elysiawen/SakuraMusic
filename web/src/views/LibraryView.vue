@@ -1,19 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { libraryApi } from '@/api';
-import type { Playlist } from '@/api/types';
+import { libraryApi, platformApi } from '@/api';
+import {
+  PLATFORM_LABEL,
+  type Platform,
+  type PlatformImportResult,
+  type Playlist,
+  type PlaylistSummary,
+} from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
 import CreatePlaylistDialog from '@/components/CreatePlaylistDialog.vue';
 import EmptyState from '@/components/EmptyState.vue';
+import LoadingState from '@/components/LoadingState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
+import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
 import { usePlayerStore } from '@/stores/player';
 import { formatRelativeTime } from '@/utils/format';
+import { describeImport } from '@/utils/platformImport';
 
 const library = useLibraryStore();
 const player = usePlayerStore();
@@ -32,6 +41,78 @@ const tabs = computed(() => [
   { key: 'playlists' as Tab, label: '我的歌单', count: library.playlists.length },
   { key: 'history' as Tab, label: '播放历史', count: library.history.length },
 ]);
+
+/*
+ * 数据来源：`null` = Sakura 自己的库，其余 = 绑定账号在平台上的歌单（只读 + 可导入）。
+ *
+ * 平台侧只列**歌单**，不再单独开「收藏」：两个平台的收藏本来就是一张歌单
+ * （QQ 是「我喜欢」、网易云是「我喜欢的音乐」），在歌单列表里就能看到、点开、导入，
+ * 单开一栏等于同一份数据出现两次。
+ *
+ * 两边的内容与操作完全不同，所以不做「合并展示」—— 本地 / 网易云 / QQ 音乐各看各的。
+ */
+const credentials = useCredentialStore();
+const source = ref<Platform | null>(null);
+const platformPlaylists = ref<PlaylistSummary[]>([]);
+const platformLoading = ref(false);
+const platformError = ref('');
+
+/** 只列已绑定的平台：没绑就没有可读的东西，不做成灰掉的入口。 */
+const boundPlatforms = computed<Platform[]>(() =>
+  (['netease', 'qq'] as Platform[]).filter((item) => credentials.modeByPlatform[item]),
+);
+
+/** 加载文案带上平台名，用户知道在等哪一家的数据（组件里再补上会跳动的三点）。 */
+const platformLoadingLabel = computed(() =>
+  source.value ? `正在读取${PLATFORM_LABEL[source.value]}账号` : '正在加载',
+);
+
+/** 切换来源。平台侧的数据不在本地，每次切换重新读一遍（上游有 60 秒缓存，不会打穿）。 */
+async function selectSource(next: Platform | null): Promise<void> {
+  source.value = next;
+  if (!next) return;
+
+  platformError.value = '';
+  platformLoading.value = true;
+  try {
+    platformPlaylists.value = (await platformApi.playlists(next)).items;
+  } catch (error) {
+    platformPlaylists.value = [];
+    platformError.value = error instanceof Error ? error.message : '读取平台歌单失败';
+  } finally {
+    platformLoading.value = false;
+  }
+}
+
+/** 已绑定的平台在凭据变化后可能增减：来源失效时退回本地，别停在空白页上。 */
+watch(boundPlatforms, (items) => {
+  if (source.value && !items.includes(source.value)) source.value = null;
+});
+
+/** 正在导入哪张（`playlist:<id>`；空串表示没有）。导入期间其它卡片的按钮一并禁用。 */
+const importing = ref('');
+
+async function importPlaylist(item: PlaylistSummary): Promise<void> {
+  await runImport(`playlist:${item.id}`, () => platformApi.importPlaylist(item.platform, item.id));
+}
+
+/**
+ * 导入是**单向复制**：读平台那份、在本地新建一张，之后互不影响。
+ * 成功后刷新本地歌单——侧栏的「我的歌单」与「本地」那一栏共用同一个 store。
+ */
+async function runImport(key: string, run: () => Promise<PlatformImportResult>): Promise<void> {
+  if (importing.value) return;
+  importing.value = key;
+  try {
+    const result = await run();
+    toast.success(describeImport(result));
+    await library.loadPlaylists();
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '导入失败');
+  } finally {
+    importing.value = '';
+  }
+}
 
 onMounted(() => {
   void library.loadAll();
@@ -93,32 +174,61 @@ async function removePlaylist(id: string, name: string): Promise<void> {
   <div>
     <div class="between" style="padding: 4px 6px 16px">
       <div class="stack" style="gap: 2px">
-        <h1 class="section-title">我的音乐</h1>
-        <span class="muted" style="font-size: 12.5px">
+        <h1 class="section-title">{{ source ? `${PLATFORM_LABEL[source]} · 我的音乐` : '我的音乐' }}</h1>
+        <span v-if="!source" class="muted" style="font-size: 12.5px">
           共 {{ library.favorites.length }} 首收藏 · {{ library.playlists.length }} 个歌单 ·
           {{ library.history.length }} 条播放记录
         </span>
+        <span v-else class="muted" style="font-size: 12.5px">
+          来自该平台账号，共 {{ platformPlaylists.length }} 个歌单（收藏「我喜欢」也在其中）
+        </span>
       </div>
-      <button v-if="tab === 'playlists'" class="btn btn-primary" type="button" @click="createOpen = true">
-        <AppIcon name="plus" :size="14" />
-        新建歌单
-      </button>
-      <button v-else-if="tab === 'history' && library.history.length > 0" class="btn" type="button" @click="clearHistory">
-        <AppIcon name="trash" :size="14" />
-        清空历史
-      </button>
-      <button
-        v-else-if="tab === 'favorites' && library.favorites.length > 0"
-        class="btn btn-primary"
-        type="button"
-        @click="player.playQueue(library.favorites)"
-      >
-        <AppIcon name="play" :size="14" filled />
-        播放全部
-      </button>
+
+      <!-- 本地来源的三个动作 -->
+      <template v-if="!source">
+        <button v-if="tab === 'playlists'" class="btn btn-primary" type="button" @click="createOpen = true">
+          <AppIcon name="plus" :size="14" />
+          新建歌单
+        </button>
+        <button v-else-if="tab === 'history' && library.history.length > 0" class="btn" type="button" @click="clearHistory">
+          <AppIcon name="trash" :size="14" />
+          清空历史
+        </button>
+        <button
+          v-else-if="tab === 'favorites' && library.favorites.length > 0"
+          class="btn btn-primary"
+          type="button"
+          @click="player.playQueue(library.favorites)"
+        >
+          <AppIcon name="play" :size="14" filled />
+          播放全部
+        </button>
+      </template>
+      <!-- 平台来源没有头部动作：每张卡片自己带「导入」，收藏也在同一个列表里 -->
+
     </div>
 
-    <div class="row" style="gap: 8px; padding: 0 6px 18px; flex-wrap: wrap">
+    <!-- 来源：Sakura 自己的库 / 各平台账号自己的库。三套数据分开看，互不合并 -->
+    <div class="row" style="gap: 8px; padding: 0 6px 10px; flex-wrap: wrap">
+      <button class="chip" :class="{ 'is-active': !source }" type="button" @click="selectSource(null)">
+        本地
+      </button>
+      <button
+        v-for="platform in boundPlatforms"
+        :key="platform"
+        class="chip"
+        :class="{ 'is-active': source === platform }"
+        type="button"
+        @click="selectSource(platform)"
+      >
+        {{ PLATFORM_LABEL[platform] }}
+      </button>
+      <span v-if="boundPlatforms.length === 0" class="muted" style="font-size: 12px; align-self: center">
+        绑定网易云 / QQ 音乐账号后，这里会多出它们的收藏与歌单
+      </span>
+    </div>
+
+    <div v-if="!source" class="row" style="gap: 8px; padding: 0 6px 18px; flex-wrap: wrap">
       <button
         v-for="item in tabs"
         :key="item.key"
@@ -134,7 +244,7 @@ async function removePlaylist(id: string, name: string): Promise<void> {
 
 
     <!-- 收藏 -->
-    <template v-if="tab === 'favorites'">
+    <template v-if="!source && tab === 'favorites'">
       <TrackList v-if="library.favorites.length > 0" :tracks="library.favorites" />
       <EmptyState
         v-else
@@ -147,7 +257,7 @@ async function removePlaylist(id: string, name: string): Promise<void> {
     </template>
 
     <!-- 歌单 -->
-    <template v-else-if="tab === 'playlists'">
+    <template v-else-if="!source && tab === 'playlists'">
       <div v-if="library.playlists.length > 0" class="grid-cards" style="padding: 0 6px">
         <div v-for="playlist in library.playlists" :key="playlist.id" class="playlist-tile">
           <div class="playlist-cover">
@@ -173,8 +283,8 @@ async function removePlaylist(id: string, name: string): Promise<void> {
             </button>
           </div>
           <div class="between" style="margin-top: 9px">
-            <RouterLink :to="{ name: 'playlist', params: { id: playlist.id } }" class="stack" style="min-width: 0; align-items: flex-start">
-              <span class="truncate" style="font-weight: 650">{{ playlist.name }}</span>
+            <RouterLink :to="{ name: 'playlist', params: { id: playlist.id } }" class="stack" style="min-width: 0">
+              <span class="truncate" :title="playlist.name" style="font-weight: 650">{{ playlist.name }}</span>
               <span class="muted" style="font-size: 11.5px">{{ playlist.trackCount }} 首</span>
             </RouterLink>
             <button
@@ -194,7 +304,7 @@ async function removePlaylist(id: string, name: string): Promise<void> {
     </template>
 
     <!-- 历史 -->
-    <template v-else>
+    <template v-else-if="!source">
       <TrackList v-if="library.history.length > 0" :tracks="library.history" :numbered="false" />
       <EmptyState v-else icon="clock" title="还没有播放记录" description="听过的歌会自动出现在这里。" />
       <p v-if="library.history.length > 0" class="muted" style="font-size: 12px; padding: 8px 10px">
@@ -202,9 +312,84 @@ async function removePlaylist(id: string, name: string): Promise<void> {
       </p>
     </template>
 
-    <p v-if="auth.user" class="muted" style="font-size: 11.5px; padding: 20px 10px 0">
+    <p v-if="!source && auth.user" class="muted" style="font-size: 11.5px; padding: 20px 10px 0">
       收藏、歌单与历史都属于 Sakura Music 自身的数据库，与两个第三方平台相互独立。
     </p>
+
+    <!-- 平台来源：只列歌单（收藏「我喜欢」就在里面），每张可导入成本地歌单 -->
+    <template v-if="source">
+      <!-- 显式加载动画：环在转、点在亮，一眼能确认没卡住 -->
+      <LoadingState v-if="platformLoading" :label="platformLoadingLabel" />
+      <EmptyState
+        v-else-if="platformError"
+        icon="link"
+        title="读不到这个平台的音乐库"
+        :description="platformError"
+      >
+        <button class="btn" type="button" @click="selectSource(source)">
+          <AppIcon name="refresh" :size="14" />
+          重试
+        </button>
+      </EmptyState>
+      <template v-else>
+        <div v-if="platformPlaylists.length > 0" class="grid-cards" style="padding: 0 6px">
+          <div v-for="item in platformPlaylists" :key="item.id" class="playlist-tile">
+            <div class="playlist-cover">
+              <RouterLink :to="{ name: 'collection', params: { platform: item.platform, id: item.id } }">
+                <CoverArt
+                  :src="item.cover"
+                  :size="150"
+                  radius="16px"
+                  fallback-icon="list"
+                  :seed="item.title"
+                  style="width: 100%"
+                />
+              </RouterLink>
+              <!--
+                「导入」浮在封面右上角，与本地歌单那张的「播放」同一个位置 ——
+                平台卡片与本地卡片一眼能区分，也不必去找角落里的图标。
+              -->
+              <button
+                class="playlist-play"
+                type="button"
+                :disabled="importing !== ''"
+                :title="`把「${item.title}」复制成我的歌单（只复制，之后两边不同步）`"
+                @click="importPlaylist(item)"
+              >
+                <AppIcon
+                  :name="importing === `playlist:${item.id}` ? 'refresh' : 'download'"
+                  :size="11"
+                  :class="{ spin: importing === `playlist:${item.id}` }"
+                />
+                {{ importing === `playlist:${item.id}` ? '导入中' : '导入' }}
+              </button>
+            </div>
+            <div class="stack" style="margin-top: 9px; min-width: 0">
+              <RouterLink
+                class="truncate"
+                style="font-weight: 650"
+                :title="item.title"
+                :to="{ name: 'collection', params: { platform: item.platform, id: item.id } }"
+              >
+                {{ item.title }}
+              </RouterLink>
+              <span class="muted" style="font-size: 11.5px">{{ item.trackCount ?? 0 }} 首</span>
+            </div>
+          </div>
+        </div>
+        <EmptyState
+          v-else
+          icon="list"
+          title="这个账号还没有歌单"
+          description="平台上的自建与收藏歌单会显示在这里。"
+        />
+      </template>
+
+      <p class="muted" style="font-size: 11.5px; padding: 20px 10px 0">
+        这份列表取自该平台账号本身：可以点开看、也可以「导入」成本地歌单；在这里不会改动平台上的数据，
+        导入之后两边各走各的，不会互相同步。
+      </p>
+    </template>
 
     <CreatePlaylistDialog :visible="createOpen" @close="createOpen = false" @created="onCreated" />
   </div>
@@ -217,6 +402,11 @@ async function removePlaylist(id: string, name: string): Promise<void> {
   background: var(--surface);
   border: 1px solid var(--border);
   transition: transform 0.22s ease;
+  /*
+   * 必需：卡片是网格项，默认 min-width: auto，而卡名是 nowrap ——
+   * 不给 0 的话，长歌单名会把整条网格列顶宽（而不是被省略号裁掉）。
+   */
+  min-width: 0;
 }
 
 .playlist-tile:hover {
@@ -263,4 +453,13 @@ async function removePlaylist(id: string, name: string): Promise<void> {
   background: linear-gradient(135deg, var(--brand-400), var(--brand-600));
   box-shadow: 0 10px 20px -12px var(--brand-600);
 }
+
+/* 导入期间其它卡片的按钮也要看得出"现在别点"（本地那张的「播放」没有禁用态，这里补上）。 */
+.playlist-play:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+
 </style>

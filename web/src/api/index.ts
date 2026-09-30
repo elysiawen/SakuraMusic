@@ -11,6 +11,7 @@ import type {
   PlaylistSummary,
   PlayResolveResult,
   Platform,
+  PlatformImportResult,
   QqLoginType,
   Quality,
   SakuraUser,
@@ -130,4 +131,22 @@ export const libraryApi = {
   listHistory: (limit = 100) => apiRequest<{ items: UnifiedTrack[] }>('/api/history', { query: { limit } }),
   recordPlay: (track: UnifiedTrack) => apiRequest<{ ok: boolean }>('/api/history', { method: 'POST', body: { track } }),
   clearHistory: () => apiRequest<{ ok: boolean }>('/api/history', { method: 'DELETE' }),
+};
+
+/**
+ * 平台账号自己的音乐库（**只读**）。
+ *
+ * 与 libraryApi 是两套数据：这里读的是绑定账号在平台上的收藏与歌单，只展示 ——
+ * 不写回平台，也不会同步进 Sakura 的本地库。没绑定账号时网关会直接拒绝（400）。
+ */
+export const platformApi = {
+  playlists: (platform: Platform) =>
+    apiRequest<{ items: PlaylistSummary[] }>(`/api/platform/${platform}/playlists`),
+
+  /** 把平台上的某张歌单复制成本地歌单（单向，不覆盖同名）。 */
+  importPlaylist: (platform: Platform, id: string) =>
+    apiRequest<PlatformImportResult>(
+      `/api/platform/${platform}/playlists/${encodeURIComponent(id)}/import`,
+      { method: 'POST' },
+    ),
 };

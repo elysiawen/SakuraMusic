@@ -234,6 +234,23 @@ export interface CollectionDetail {
   items: UnifiedTrack[];
 }
 
+/**
+ * 「从平台导入」的结果：新建的本地歌单与统计。
+ *
+ * 导入是**单向复制**：本地这张与平台那张之后各走各的，不会互相同步。
+ */
+export interface PlatformImportResult {
+  playlist: Playlist;
+  /** 实际写入的曲目数。 */
+  added: number;
+  /** 因重复或缺少音源而跳过的数量。 */
+  skipped: number;
+  /** 平台侧的曲目总数。 */
+  total: number;
+  /** 是否因为单次上限只导入了前面一部分。 */
+  truncated: boolean;
+}
+
 export type Quality = 'standard' | 'high' | 'lossless' | 'hires';
 
 /** 直连播放所需的地址与请求头（由平台 CDN 的防盗链要求决定）。 */

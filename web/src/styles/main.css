@@ -1196,9 +1196,19 @@ textarea {
 }
 
 /* -------------------------------- 页面头部 -------------------------------- */
+/*
+ * 封面是这一行的"标尺"：它固定 208 的正方形，比任何一类文字块都高
+ * （实测：专辑 182 / 歌单 155 / 歌手 201），于是行高由它决定。
+ *
+ * 文字块用 stretch 拉满同一行高，它的按钮行再用 margin-top: auto 压到底 ——
+ * 这样封面底边与按钮底边正好齐平（align-items: flex-start 时会差出一截）。
+ *
+ * 反过来让封面去"填满"文字块的高度是做不到的：flex 拉伸会覆盖 aspect-ratio，
+ * 而此时的 auto 宽度也不会按比例反推（实测塌成 0 宽），正方形留不住。
+ */
 .page-header {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 22px;
   padding: 18px;
   margin-bottom: 20px;
@@ -1208,10 +1218,50 @@ textarea {
 }
 
 .page-header .cover {
-  width: 148px;
-  height: 148px;
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
+}
+
+/*
+ * 文字块里的按钮行贴到这一行底部。
+ *
+ * margin-top: auto 只在"容器比内容高"时生效，而这里正是：文字块被拉满到封面高度。
+ * padding-top 保留按钮与上方信息之间的最小间距（各页面原来写的 margin-top: 6px 已归到这里）。
+ */
+.page-header .stack > .row:last-child {
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+/*
+ * 占位骨架的基本块：详情页骨架（DetailSkeleton.vue）与各列表页的加载占位共用。
+ *
+ * 底色用 --border-strong 而不是 --surface：后者是 66% 的白玻璃，压在浅色页面上几乎看不出
+ * 形状，细的占位条会直接"隐形"（大色块还能靠面积看出轮廓，文字条就没了）。
+ * --border-strong 两边主题都有对比：浅色是 24% 的灰紫，深色是 18% 的白。
+ * 扫过的高光用 --surface-strong（浅色下是亮白、深色下是暗面），跟着主题走，不写死颜色。
+ * 降级交给全局的 prefers-reduced-motion：它会把动画时长压到 0，停成一个静态色块。
+ */
+.sk {
+  border-radius: var(--radius-sm);
+  background-color: var(--border-strong);
+  background-image: linear-gradient(
+    100deg,
+    transparent 35%,
+    var(--surface-strong) 50%,
+    transparent 65%
+  );
+  background-size: 220% 100%;
+  animation: sk-sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes sk-sweep {
+  from {
+    background-position: 220% 0;
+  }
+  to {
+    background-position: -220% 0;
+  }
 }
 
 /* -------------------------------- 响应式 -------------------------------- */
@@ -1387,13 +1437,72 @@ textarea {
  * 曲目行留给标题的宽度只剩几十像素、详情页 148px 封面把标题挤成一条、各处固定 padding 偏大。
  */
 @media (max-width: 480px) {
+  /*
+   * 手机端顶栏浮到内容之上（详情页封面要钻到它后面，像 QQ 音乐 App 那样）。
+   * 这里有三段量要算清楚：
+   *
+   *   --topbar-inset  顶栏四周的留白。原来它来自 .app-main 的内边距，顶栏浮起来后就得自己带。
+   *                   注意上内边距不能再留在 .app-main 上：那会让内容区的最上沿落在 8px 处，
+   *                   详情页封面再怎么负也只能顶到 8px —— 上面这 8px 露出的就是页面底色
+   *                   （浅蓝的一条），所以 .app-main 的上内边距必须是 0，由顶栏自己 top 到 8px。
+   *   --topbar-h      顶栏高度。手机端去掉了边框：上下各 10px 内边距 + 46px 的搜索框（它最高）
+   *                   = 66px。改顶栏样式时记得重量一次。
+   *   --topbar-gap    顶栏底边与页面首个内容之间留的呼吸位。
+   *
+   * --topbar-space 是三者之和：内容区的上内边距与详情页头部的负边距都用它，只改一处。
+   * .topbar 自己的 z-index 已抬到 20（见它的注释），脱离文档流后照样盖在封面上。
+   */
   .app-main {
-    padding: 8px 8px 0;
+    position: relative;
+    --topbar-inset: 8px;
+    --topbar-h: 66px;
+    --topbar-gap: 8px;
+    --topbar-space: calc(var(--topbar-inset) + var(--topbar-h) + var(--topbar-gap));
+    /* 上内边距必须为 0，否则详情页封面顶不到最上沿（见上面 --topbar-inset 的说明）。 */
+    padding: 0 8px 0;
   }
 
-  .app-content {
-    padding: 12px 4px 20px 4px;
+  /*
+   * 顶栏浮在图上，三件事：
+   *   - 四周留白自己带：绝对定位的对齐基准是 .app-main 的内边距框，写 0 会直接贴到边缘。
+   *   - 底面只留纯磨砂，撤掉那层玻璃色。桌面顶栏的底色是 --surface（--glass-tint 的 66% 白），
+   *     而 --glass-tint 是偏蓝的白（251,253,255），糊在封面上会洗出一层灰蓝的雾 ——
+   *     看着不像"透过去"。留 backdrop-filter 的模糊就够了：图透得出来，滚过去的文字也还是糊的。
+   *   - 描边与投影一并去掉：没有底色时它们会变成一圈悬空的框。
+   */
+  .topbar {
+    position: absolute;
+    top: var(--topbar-inset);
+    left: 8px;
+    right: 8px;
+    background: none;
+    border: 0;
+    box-shadow: none;
+    backdrop-filter: blur(var(--blur));
+    -webkit-backdrop-filter: blur(var(--blur));
   }
+
+  /*
+   * 手机端把左右这 8px 从 .app-main 挪进 .app-content。
+   *
+   * 原因是详情页头部要用负外边距做「通栏大图」：子元素能向外借用的上限**只是它自己容器的内边距**，
+   * 跨不过父级（.app-main）的 padding。原先 .app-content 左右只有 4px，头部顶出去 12px，
+   * 多出来的 8px 就成了溢出 —— 而 .app-content 是 overflow-y: auto 的滚动容器，
+   * 一个轴不是 visible 会把另一个轴也算成 auto，于是哪怕超 1px 也冒出横向滚动条。
+   *
+   * 用 -8px 抵消父级内边距、自己补上 12px：内容的左右位置分毫不变（8 + 4 = 0 + 12），
+   * 但它的内边距区一直铺到屏幕两侧，-12px 的通栏才真的顶到边且不产生溢出。
+   */
+  .app-content {
+    margin: 0 -8px;
+    /* 上边给浮起来的顶栏让出「上留白 + 高度 + 呼吸位」；详情页头部会把这一段整个负掉。 */
+    padding: var(--topbar-space) 12px 20px;
+  }
+
+  /*
+   * 加载骨架不必额外照顾：DetailSkeleton 里那层就是 .page-header，
+   * 上面那条负边距会照常把它（连同骨架整体）顶到最上面。
+   */
 
   .app-sidebar {
     margin: 0 8px 8px;
@@ -1569,17 +1678,125 @@ textarea {
     margin: 0 2px 14px;
   }
 
+  /*
+   * 详情页头部（专辑 / 歌单 / 歌手 / 榜单共用）在手机上换成「通栏大图 + 信息流」，
+   * 形状参考 QQ 音乐 App 的专辑页：封面顶到屏幕两侧、去掉卡片外壳、
+   * 信息依次落在图下方、操作按钮拉通整行。
+   *
+   * 原来手机上只是把桌面卡片竖排（封面缩到 112、内边距照旧），三处都不像移动端：
+   * 图太小没有视觉重心、卡片内边距白白吃掉宽度、按钮只有自身那么宽。
+   */
   .page-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 14px;
-    padding: 14px;
-    margin-bottom: 14px;
+    display: block;
+    padding: 0;
+    /*
+     * 上边负掉内容区为浮起来的顶栏预留的那一段（--topbar-space = 上留白 + 高度 + 呼吸位），
+     * 封面因此从屏幕最上沿开始、钻到顶栏后面；左右各抵掉 12px（正好是 .app-content 的内边距，
+     * 它已经把 .app-main 那 8px 并进来了，见上面），封面贴到屏幕两侧。
+     * 文字块再把这 12px 以内边距加回来（见下面 .stack），与页面其它内容对齐。
+     */
+    margin: calc(-1 * var(--topbar-space)) -12px 14px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
   }
 
+  /*
+   * 封面通栏正方形（占屏约一半高，与参考里大图的比例相当）。
+   * 不裁成竖幅：我们的封面是方图，裁两侧会把封面上的字切掉。
+   *
+   * 高度用 aspect-ratio 按自身宽度算，不写 100vw —— 桌面窄窗口有竖向滚动条时，
+   * 100vw 比实际可用宽度大十几像素，封面会比正方形略高。
+   * CoverArt 的尺寸与圆角都是行内样式（208px / 16px），媒体查询必须 !important 才盖得住。
+   */
   .page-header .cover {
-    width: 112px;
-    height: 112px;
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1;
+    border-radius: 0 !important;
+    /* 图的下缘会淡出到透明，这里不能再垫 .cover 自带的底色，否则会露出一条浅色边。 */
+    background: none;
+  }
+
+  /*
+   * 底部 25% 做「模糊 + 渐隐」，对齐参考图里那种化开、融进页面底色的下缘（看不到硬边）。
+   * 两件事配合：
+   *   - 图片自己用 mask 把下缘淡出到透明，露出的是页面底色，而不是封面的浅色背景；
+   *   - ::after 再压一条高斯模糊带（backdrop-filter 模糊它身后的图），
+   *     让过渡区是「虚」的，而不只是单纯变淡。
+   * 模糊带的 mask 两端透明、中间最实，否则会在封面上切出一条清晰的模糊边界。
+   * 圆心头像那一页（.is-avatar）不适用：圆形头像下缘淡出只会像个缺口的圆。
+   */
+  .page-header:not(.is-avatar) .cover img,
+  .page-header:not(.is-avatar) .cover .cover-fallback {
+    -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent);
+    mask-image: linear-gradient(to bottom, #000 75%, transparent);
+  }
+
+  .page-header:not(.is-avatar) .cover::after {
+    content: '';
+    position: absolute;
+    inset: auto 0 0;
+    height: 25%;
+    pointer-events: none;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 45%, transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 45%, transparent);
+  }
+
+  /* 文字块退到图片下方，左右把上面抵掉的 12px 还回来。 */
+  .page-header .stack {
+    padding: 12px 12px 0;
+  }
+
+  /*
+   * 歌手页例外：那个封面是圆形头像（CoverArt 的 radius=999px），通栏只会把圆拉成方横幅。
+   * 这里改成「居中大圆头像 + 居中的信息」，也是 QQ 音乐 App 歌手页的形状。
+   */
+  .page-header.is-avatar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 18px 16px 0;
+    margin: 0 0 14px;
+  }
+
+  .page-header.is-avatar .cover {
+    width: 136px !important;
+    height: 136px !important;
+    /* 上面那条通栏规则把圆角清了，这里要还回来（同样得 !important 才盖得住行内样式）。 */
+    border-radius: 999px !important;
+  }
+
+  /*
+   * width: 100% 不能省：父级 align-items: center 会把 .stack 收成内容宽，
+   * 于是里面按钮行再写 width: 100% 也只是那点宽度（按钮会挤成一枚居中的小药丸）。
+   */
+  .page-header.is-avatar .stack {
+    width: 100%;
+    align-items: center;
+    padding: 0;
+    text-align: center;
+  }
+
+  .page-header.is-avatar .stack > .row:last-child {
+    width: 100%;
+  }
+
+  /* 按钮行：参考里是两个等宽药丸按钮 —— 这里让每个按钮平分整行，并给足拇指高度。 */
+  .page-header .stack > .row:last-child {
+    padding-top: 12px;
+  }
+
+  /* 骨架里的按钮占位（.sk）也照这个来，否则加载完按钮会从 160px 跳成整行。 */
+  .page-header .stack > .row:last-child > .btn,
+  .page-header .stack > .row:last-child > .sk {
+    flex: 1 1 0;
+    min-height: 44px;
+    justify-content: center;
   }
 
   /*

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { musicApi } from '@/api';
+import { musicApi, platformApi } from '@/api';
 import { PLATFORM_LABEL, type CollectionDetail, type Platform } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
+import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
+import { useLibraryStore } from '@/stores/library';
 import { usePlayerStore } from '@/stores/player';
 import { formatDuration } from '@/utils/format';
+import { describeImport } from '@/utils/platformImport';
 
 const route = useRoute();
 const player = usePlayerStore();
@@ -43,17 +46,42 @@ async function load(): Promise<void> {
 
 onMounted(load);
 watch([platform, collectionId, isToplist], load);
+
+/** 导入进行中：按钮置为加载态，也挡住重复点击。 */
+const importing = ref(false);
+const library = useLibraryStore();
+
+/**
+ * 把当前这张平台歌单**复制**成本地歌单（单向，之后两边不同步）。
+ *
+ * 榜单（toplist）刻意不给这个按钮：它是另一套上游接口（`/top/{id}/detail`），
+ * 而导入接口按歌单接口去取曲目，对榜单会取到错的东西 —— 宁可不给，也别导进一坨错的。
+ */
+async function importPlaylist(): Promise<void> {
+  if (importing.value || isToplist.value) return;
+  importing.value = true;
+  try {
+    const result = await platformApi.importPlaylist(platform.value, collectionId.value);
+    toast.success(describeImport(result));
+    // 侧栏与「我的音乐」里的本地歌单是同一个 store，导完立刻刷新。
+    await library.loadPlaylists();
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '导入失败');
+  } finally {
+    importing.value = false;
+  }
+}
 </script>
 
 <template>
   <div>
-    <div v-if="loading" class="skeleton" style="height: 190px" />
+    <DetailSkeleton v-if="loading" />
 
     <template v-else-if="detail && detail.items.length > 0">
       <section class="page-header">
         <CoverArt
           :src="detail.cover"
-          :size="148"
+          :size="208"
           radius="16px"
           fallback-icon="disc"
           :seed="detail.title"
@@ -69,15 +97,22 @@ watch([platform, collectionId, isToplist], load);
           <p class="muted" style="margin: 0; font-size: 12.5px">
             {{ detail.items.length }} 首 · 总时长 {{ formatDuration(totalDuration) }}
           </p>
-          <div class="row" style="gap: 8px; margin-top: 6px">
+          <div class="row" style="gap: 8px; flex-wrap: wrap">
             <button class="btn btn-primary" type="button" @click="player.playQueue(detail.items)">
               <AppIcon name="play" :size="14" filled />
               播放全部
             </button>
-            <RouterLink class="btn" :to="{ name: 'home' }">
-              <AppIcon name="chevron-left" :size="14" />
-              返回发现
-            </RouterLink>
+            <!-- 歌单可以整份复制到本地；榜单不给（见 importPlaylist 的注释） -->
+            <button
+              v-if="!isToplist"
+              class="btn"
+              type="button"
+              :disabled="importing"
+              @click="importPlaylist()"
+            >
+              <AppIcon name="download" :size="14" :class="{ spin: importing }" />
+              {{ importing ? '导入中…' : '导入到我的歌单' }}
+            </button>
           </div>
         </div>
       </section>
@@ -96,20 +131,4 @@ watch([platform, collectionId, isToplist], load);
   </div>
 </template>
 
-<style scoped>
-.skeleton {
-  border-radius: var(--radius-lg);
-  background: linear-gradient(90deg, var(--surface), var(--surface-strong), var(--surface));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-}
 
-@keyframes shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-</style>

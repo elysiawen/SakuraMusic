@@ -88,8 +88,8 @@ async function createAndAdd(): Promise<void> {
             @click="addTo(playlist.id)"
           >
             <CoverArt :src="playlist.cover" :size="34" radius="8px" fallback-icon="list" :seed="playlist.name" />
-            <span class="stack" style="min-width: 0; align-items: flex-start">
-              <span class="truncate" style="font-weight: 600">{{ playlist.name }}</span>
+            <span class="stack" style="min-width: 0">
+              <span class="truncate" :title="playlist.name" style="font-weight: 600">{{ playlist.name }}</span>
               <span class="muted" style="font-size: 11px">{{ playlist.trackCount }} 首</span>
             </span>
             <AppIcon name="plus" :size="16" style="margin-left: auto" />

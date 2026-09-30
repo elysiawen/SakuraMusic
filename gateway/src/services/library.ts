@@ -17,6 +17,10 @@ interface TrackRow {
   album: string;
   cover: string | null;
   duration_ms: number;
+  /** 后补的三列：歌手与专辑的 id / platform。老数据是 null，只有名字可用。 */
+  artists_json: unknown;
+  album_id: string | null;
+  album_platform: string | null;
 }
 
 /** 从请求体解析统一歌曲对象，做必要的字段校验。 */
@@ -31,7 +35,12 @@ export function parseTrackInput(input: unknown): UnifiedTrack {
   }
   const artists = Array.isArray(raw.artists)
     ? raw.artists
-        .map((item: any) => ({ name: String(item?.name ?? item ?? '').trim() }))
+        .map((item: any) => ({
+          name: String(item?.name ?? item ?? '').trim(),
+          // id / platform 是「进歌手页」的钥匙：客户端带着就存下来，否则以后没法把名字变回链接。
+          id: item?.id ? String(item.id) : undefined,
+          platform: isPlatform(item?.platform) ? item.platform : undefined,
+        }))
         .filter((item: { name: string }) => item.name)
     : [];
 
@@ -39,7 +48,12 @@ export function parseTrackInput(input: unknown): UnifiedTrack {
     key: String(raw.key ?? trackKey(platform, id)),
     title: String(raw.title ?? '').trim() || '未知歌曲',
     artists: artists.length > 0 ? artists : [{ name: '未知歌手' }],
-    album: { name: String(raw.album?.name ?? ''), cover: raw.album?.cover ? String(raw.album.cover) : undefined },
+    album: {
+      name: String(raw.album?.name ?? ''),
+      cover: raw.album?.cover ? String(raw.album.cover) : undefined,
+      id: raw.album?.id ? String(raw.album.id) : undefined,
+      platform: isPlatform(raw.album?.platform) ? raw.album.platform : undefined,
+    },
     durationMs: Number(raw.durationMs) || 0,
     sources: [
       {
@@ -53,15 +67,61 @@ export function parseTrackInput(input: unknown): UnifiedTrack {
   };
 }
 
+/** jsonb 列取值：驱动一般已解析成数组，兼容一下"被当成字符串存进来"的情况。 */
+function asArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * 歌手的 id / platform 取自后补的 artists_json；
+ * 老数据没有这一列，就退回「按 / 拆名字」——只是没有 id，前端点不进歌手页。
+ */
+function artistsFromRow(row: TrackRow): UnifiedTrack['artists'] {
+  const artists = asArray(row.artists_json)
+    .map((item) => item as { name?: unknown; id?: unknown; platform?: unknown })
+    .map((item) => ({
+      name: String(item?.name ?? '').trim(),
+      id: item?.id ? String(item.id) : undefined,
+      platform: isPlatform(item?.platform) ? item.platform : undefined,
+    }))
+    .filter((item) => item.name);
+
+  if (artists.length > 0) return artists;
+  return row.artists
+    ? row.artists.split(' / ').map((name) => ({ name }))
+    : [{ name: '未知歌手' }];
+}
+
+/**
+ * 专辑同理：id 是后补的，老数据没有就只给名字（前端会渲染成纯文本）。
+ * platform 缺省时按曲目自己的平台补 —— 专辑与曲目同平台是这个库里的常态。
+ */
+function albumFromRow(row: TrackRow): UnifiedTrack['album'] {
+  const platform = isPlatform(row.album_platform) ? (row.album_platform as Platform) : undefined;
+  return {
+    name: row.album,
+    cover: row.cover ?? undefined,
+    id: row.album_id ?? undefined,
+    platform: row.album_id ? (platform ?? (row.platform as Platform)) : undefined,
+  };
+}
+
 function rowToTrack(row: TrackRow): UnifiedTrack {
   const platform = row.platform as Platform;
   return {
     key: trackKey(platform, row.track_id),
     title: row.title,
-    artists: row.artists
-      ? row.artists.split(' / ').map((name) => ({ name }))
-      : [{ name: '未知歌手' }],
-    album: { name: row.album, cover: row.cover ?? undefined },
+    artists: artistsFromRow(row),
+    album: albumFromRow(row),
     durationMs: row.duration_ms,
     sources: [
       {
@@ -74,6 +134,7 @@ function rowToTrack(row: TrackRow): UnifiedTrack {
   };
 }
 
+/** 写入用的列顺序，与下面几条 INSERT 的字段列表严格对应（12 列）。 */
 function trackColumns(track: UnifiedTrack): unknown[] {
   const source = track.sources[0];
   return [
@@ -86,6 +147,10 @@ function trackColumns(track: UnifiedTrack): unknown[] {
     track.album.name,
     track.album.cover ?? null,
     track.durationMs,
+    // 歌手与专辑的 id / platform：前端靠它们把名字变成能点进详情页的链接。
+    JSON.stringify(track.artists.map(({ name, id, platform }) => ({ name, id, platform }))),
+    track.album.id ?? null,
+    track.album.platform ?? null,
   ];
 }
 
@@ -196,7 +261,8 @@ export async function getPlaylist(userId: string, playlistId: string): Promise<P
   if (!playlist) throw notFound('歌单不存在');
 
   const rows = await query<TrackRow>(
-    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms
+    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+            artists_json, album_id, album_platform
        from playlist_tracks
       where playlist_id = $1
       order by position, id`,
@@ -219,7 +285,20 @@ export async function addTrackToPlaylist(
   );
   if (existing) return { added: false, trackCount: await countPlaylistTracks(playlistId) };
 
-  const [platform, trackId, mid, numericId, title, artists, album, cover, durationMs] = trackColumns(track);
+  const [
+    platform,
+    trackId,
+    mid,
+    numericId,
+    title,
+    artists,
+    album,
+    cover,
+    durationMs,
+    artistsJson,
+    albumId,
+    albumPlatform,
+  ] = trackColumns(track);
   const position =
     (await one<{ max: string | null }>(
       'select max(position)::text as max from playlist_tracks where playlist_id = $1',
@@ -228,8 +307,9 @@ export async function addTrackToPlaylist(
 
   await execute(
     `insert into playlist_tracks
-       (playlist_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms, position)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       (playlist_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+        artists_json, album_id, album_platform, position)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       playlistId,
       platform,
@@ -241,11 +321,81 @@ export async function addTrackToPlaylist(
       album,
       cover,
       durationMs,
+      artistsJson,
+      albumId,
+      albumPlatform,
       position === null ? 0 : Number(position) + 1,
     ],
   );
   await execute('update playlists set updated_at = now() where id = $1', [playlistId]);
   return { added: true, trackCount: await countPlaylistTracks(playlistId) };
+}
+
+/**
+ * 批量写入曲目（供「从平台导入歌单」使用）。
+ *
+ * 逐首走 `addTrackToPlaylist` 的话，每首都要查两次库（是否已存在、当前最大 position）——
+ * 导入一张几百首的歌单就是上千次往返，既慢又没必要。这里只查两次：一次取已存在的 key、
+ * 一次取 position 起点，然后按块多行 INSERT。
+ *
+ * 去重口径与单首版一致（`platform + track_id`）；平台歌单里偶有重复，同一批只保留首次出现。
+ */
+export async function addTracksToPlaylist(
+  userId: string,
+  playlistId: string,
+  tracks: UnifiedTrack[],
+): Promise<{ added: number; skipped: number; trackCount: number }> {
+  await assertPlaylistOwner(userId, playlistId);
+
+  const existing = await query<{ platform: string; track_id: string }>(
+    'select platform, track_id from playlist_tracks where playlist_id = $1',
+    [playlistId],
+  );
+  const seen = new Set(existing.map((row) => `${row.platform}:${row.track_id}`));
+
+  const fresh: UnifiedTrack[] = [];
+  let skipped = 0;
+  for (const track of tracks) {
+    const source = track.sources[0];
+    const key = source ? `${source.platform}:${source.id}` : '';
+    if (!key || seen.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(key);
+    fresh.push(track);
+  }
+
+  if (fresh.length > 0) {
+    const max = await one<{ max: string | null }>(
+      'select max(position)::text as max from playlist_tracks where playlist_id = $1',
+      [playlistId],
+    );
+    const first = max?.max === null || max?.max === undefined ? 0 : Number(max.max) + 1;
+
+    // 每行 14 个参数（playlist_id + 12 个曲目列 + position）；200 行 = 2800，远低于 65535 上限。
+    const COLUMNS = 14;
+    const CHUNK = 200;
+    for (let start = 0; start < fresh.length; start += CHUNK) {
+      const chunk = fresh.slice(start, start + CHUNK);
+      const values: unknown[] = [];
+      const rows = chunk.map((track, index) => {
+        const base = index * COLUMNS;
+        values.push(playlistId, ...trackColumns(track), first + index);
+        return `(${Array.from({ length: COLUMNS }, (_, offset) => `$${base + offset + 1}`).join(', ')})`;
+      });
+      await execute(
+        `insert into playlist_tracks
+           (playlist_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+            artists_json, album_id, album_platform, position)
+         values ${rows.join(', ')}`,
+        values,
+      );
+    }
+    await execute('update playlists set updated_at = now() where id = $1', [playlistId]);
+  }
+
+  return { added: fresh.length, skipped, trackCount: await countPlaylistTracks(playlistId) };
 }
 
 async function countPlaylistTracks(playlistId: string): Promise<number> {
@@ -276,7 +426,8 @@ export async function removeTrackFromPlaylist(
 
 export async function listFavorites(userId: string, limit = 500): Promise<UnifiedTrack[]> {
   const rows = await query<TrackRow>(
-    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms
+    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+            artists_json, album_id, album_platform
        from favorites where user_id = $1 order by created_at desc limit $2`,
     [userId, limit],
   );
@@ -290,13 +441,41 @@ export async function toggleFavorite(
 ): Promise<{ favorite: boolean }> {
   const source = track.sources[0];
   if (favorite) {
-    const [platform, trackId, mid, numericId, title, artists, album, cover, durationMs] = trackColumns(track);
+    const [
+      platform,
+      trackId,
+      mid,
+      numericId,
+      title,
+      artists,
+      album,
+      cover,
+      durationMs,
+      artistsJson,
+      albumId,
+      albumPlatform,
+    ] = trackColumns(track);
     await execute(
       `insert into favorites
-         (user_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (user_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+          artists_json, album_id, album_platform)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        on conflict (user_id, platform, track_id) do nothing`,
-      [userId, platform, trackId, mid, numericId, title, artists, album, cover, durationMs],
+      [
+        userId,
+        platform,
+        trackId,
+        mid,
+        numericId,
+        title,
+        artists,
+        album,
+        cover,
+        durationMs,
+        artistsJson,
+        albumId,
+        albumPlatform,
+      ],
     );
     return { favorite: true };
   }
@@ -324,7 +503,8 @@ export async function listHistory(
   limit = 100,
 ): Promise<Array<UnifiedTrack & { playedAt: string }>> {
   const rows = await query<TrackRow & { played_at: Date }>(
-    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms, played_at
+    `select platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms, played_at,
+            artists_json, album_id, album_platform
        from play_history where user_id = $1 order by played_at desc limit $2`,
     [userId, limit],
   );
@@ -345,12 +525,40 @@ export async function recordPlay(userId: string, track: UnifiedTrack): Promise<v
     return;
   }
 
-  const [platform, trackId, mid, numericId, title, artists, album, cover, durationMs] = trackColumns(track);
+  const [
+    platform,
+    trackId,
+    mid,
+    numericId,
+    title,
+    artists,
+    album,
+    cover,
+    durationMs,
+    artistsJson,
+    albumId,
+    albumPlatform,
+  ] = trackColumns(track);
   await execute(
     `insert into play_history
-       (user_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [userId, platform, trackId, mid, numericId, title, artists, album, cover, durationMs],
+       (user_id, platform, track_id, track_mid, numeric_id, title, artists, album, cover, duration_ms,
+        artists_json, album_id, album_platform)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+    [
+      userId,
+      platform,
+      trackId,
+      mid,
+      numericId,
+      title,
+      artists,
+      album,
+      cover,
+      durationMs,
+      artistsJson,
+      albumId,
+      albumPlatform,
+    ],
   );
 }
 

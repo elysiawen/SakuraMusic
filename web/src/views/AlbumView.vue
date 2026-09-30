@@ -5,6 +5,7 @@ import { musicApi } from '@/api';
 import { PLATFORM_LABEL, type AlbumDetail, type Platform } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
+import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
@@ -44,13 +45,13 @@ watch([platform, albumId], load);
 
 <template>
   <div>
-    <div v-if="loading" class="skeleton" style="height: 220px" />
+    <DetailSkeleton v-if="loading" />
 
     <template v-else-if="detail">
       <section class="page-header">
         <CoverArt
           :src="detail.album.cover"
-          :size="148"
+          :size="208"
           radius="16px"
           fallback-icon="disc"
           :seed="detail.album.name"
@@ -86,7 +87,7 @@ watch([platform, albumId], load);
             · 总时长 {{ formatDuration(totalDuration) }}
           </p>
 
-          <div class="row" style="gap: 8px; margin-top: 6px">
+          <div class="row" style="gap: 8px">
             <button
               class="btn btn-primary"
               type="button"
@@ -116,13 +117,6 @@ watch([platform, albumId], load);
 </template>
 
 <style scoped>
-.skeleton {
-  border-radius: var(--radius-lg);
-  background: linear-gradient(90deg, var(--surface), var(--surface-strong), var(--surface));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-}
-
 .artist-link {
   color: var(--text-soft);
   font-weight: 650;
@@ -131,14 +125,5 @@ watch([platform, albumId], load);
 
 .artist-link:hover {
   color: var(--brand-600);
-}
-
-@keyframes shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
 }
 </style>

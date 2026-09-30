@@ -10,6 +10,14 @@ export type RepeatMode = 'off' | 'all' | 'one';
 /** 面向界面的播放模式：把底层的「循环开关」与「随机开关」合成一个列表。 */
 export type PlayMode = 'order' | 'all' | 'one' | 'shuffle';
 
+/**
+ * 取流方式，按平台分别设置：
+ *   auto   智能：直连优先，被 CDN 拒绝时自动改用网关中转，并记住这个平台；
+ *   direct 直连：始终从平台 CDN 取流，不通就直接失败，不偷偷回退；
+ *   proxy  中转：始终经网关转发，用服务器带宽换稳定。
+ */
+export type RouteMode = 'auto' | 'direct' | 'proxy';
+
 interface PersistedPlayerState {
   volume: number;
   quality: Quality;
@@ -18,6 +26,8 @@ interface PersistedPlayerState {
   preferredPlatform: Platform | null;
   /** 直连失败过的平台：这些平台后续直接走网关代理，不再重试直连。 */
   proxyOnly?: Platform[];
+  /** 各平台的取流方式；旧存档没有这一项，按 auto（智能）处理。 */
+  routeMode?: Partial<Record<Platform, RouteMode>>;
   /** 上次的播放现场：队列、听到第几首、听到哪儿了（秒）。 */
   queue?: UnifiedTrack[];
   index?: number;
@@ -82,6 +92,8 @@ export const usePlayerStore = defineStore('player', () => {
   const preferredPlatform = ref<Platform | null>(persisted.preferredPlatform ?? null);
   /** 直连被拒过的平台，之后一律走代理，避免每次播放都先失败一次。 */
   const proxyOnly = ref<Platform[]>(persisted.proxyOnly ?? []);
+  /** 各平台的取流方式，缺省即智能（= 改动之前的行为）。 */
+  const routeMode = ref<Partial<Record<Platform, RouteMode>>>(persisted.routeMode ?? {});
   const lyric = ref<LyricResult>({ lrc: '', trans: '', roma: '' });
   const lyricLoading = ref(false);
   const expanded = ref(false);
@@ -172,6 +184,7 @@ export const usePlayerStore = defineStore('player', () => {
       shuffle: shuffle.value,
       preferredPlatform: preferredPlatform.value,
       proxyOnly: proxyOnly.value,
+      routeMode: routeMode.value,
       queue: capped.queue,
       index: capped.index,
       position: currentTime.value,
@@ -212,6 +225,26 @@ export const usePlayerStore = defineStore('player', () => {
   function resetProxyOnly(): void {
     if (proxyOnly.value.length === 0) return;
     proxyOnly.value = [];
+    persist();
+  }
+
+  /** 某个平台当前的取流方式；没设过就是智能。 */
+  function routeModeOf(platform: Platform): RouteMode {
+    return routeMode.value[platform] ?? 'auto';
+  }
+
+  /**
+   * 改某个平台的取流方式。
+   *
+   * 从「中转」切回智能 / 直连时要顺手清掉这个平台的直连失败记录：
+   * 那条记录的含义是「直连被拒过，别再试了」，而用户此刻说的正是「再试一次」。
+   * 不清的话，选了「直连」也还是走中转，看着像设置没生效。
+   */
+  function setRouteMode(platform: Platform, mode: RouteMode): void {
+    routeMode.value = { ...routeMode.value, [platform]: mode };
+    if (mode !== 'proxy' && proxyOnly.value.includes(platform)) {
+      proxyOnly.value = proxyOnly.value.filter((item) => item !== platform);
+    }
     persist();
   }
 
@@ -278,7 +311,14 @@ export const usePlayerStore = defineStore('player', () => {
         return;
       }
 
-      error.value = '音频加载失败，可尝试在播放条上切换音源';
+      /*
+       * 直连模式下没有回退地址（directFallback 为 null），失败就是失败 ——
+       * 这时必须说清原因，否则用户只看到「加载失败」，不知道是自己把取流方式设成了直连。
+       */
+      error.value =
+        usingDirect.value && !directFallback
+          ? '直连失败：该平台当前取流方式是「直连」，不会自动改走中转。可在设置里改成「智能」或「中转」'
+          : '音频加载失败，可尝试在播放条上切换音源';
       toast.error(error.value);
     });
 
@@ -377,12 +417,25 @@ export const usePlayerStore = defineStore('player', () => {
       const element = ensureAudio();
 
       /*
-       * 优先直连：客户端自己向平台 CDN 取流，服务器不占音频带宽。
-       * 浏览器无法自定义 Referer，若被防盗链拒绝，会由 error 事件回退到代理地址。
+       * 取流方式由设置里按平台决定：
+       *   proxy  直接用网关地址，完全不碰 CDN；
+       *   direct 只用直连地址（上游没给直连地址时只能退回网关，否则就真没源可播了）；
+       *   auto   直连优先，被防盗链拒绝后由 error 事件回退到网关并记住该平台。
+       * 平台 CDN 会校验来源，浏览器改不了请求头，所以直连本来就有失败的可能。
        */
-      const useDirect = Boolean(result.direct) && !proxyOnly.value.includes(source.platform);
+      const mode = routeModeOf(source.platform);
+      const useDirect =
+        mode === 'direct'
+          ? Boolean(result.direct)
+          : mode === 'proxy'
+            ? false
+            : Boolean(result.direct) && !proxyOnly.value.includes(source.platform);
       usingDirect.value = useDirect;
-      directFallback = { proxy: result.url, platform: source.platform };
+      /*
+       * 只有智能模式才准备回退。直连模式下用户要的就是「不通就失败」，
+       * 偷偷回退到中转等于把他的设置改了。
+       */
+      directFallback = mode === 'auto' ? { proxy: result.url, platform: source.platform } : null;
 
       element.src = useDirect && result.direct ? result.direct.url : result.url;
       element.volume = volume.value;
@@ -712,6 +765,10 @@ export const usePlayerStore = defineStore('player', () => {
     preferredPlatform,
     /** 直连被拒的平台（此后一律走网关中转）。 */
     proxyOnly,
+    /** 各平台的取流方式（智能 / 直连 / 中转）。 */
+    routeMode,
+    routeModeOf,
+    setRouteMode,
     /** 当前这首走的是不是直连（false = 字节经网关转发）。 */
     usingDirect,
     lyric,
