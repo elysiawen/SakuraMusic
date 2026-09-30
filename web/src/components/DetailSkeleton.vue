@@ -13,12 +13,15 @@
  */
 withDefaults(
   defineProps<{
-    /** 曲目行占位数量。 */
+    /**
+     * 曲目行占位数量。
+     * 默认 3：够暗示"下面是歌曲列表"，又不会把首屏占满（账号里歌多歌少都不至于空一片）。
+     */
     rows?: number;
     /** 歌手页：封面是圆形头像。 */
     avatar?: boolean;
   }>(),
-  { rows: 4, avatar: false },
+  { rows: 3, avatar: false },
 );
 </script>
 

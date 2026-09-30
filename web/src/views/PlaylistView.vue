@@ -144,6 +144,7 @@ void formatDuration;
 
 <template>
   <div>
+    <!-- 行数用 DetailSkeleton 的默认值（3 行曲目影子），四个详情页保持一致 -->
     <DetailSkeleton v-if="loading" />
 
     <template v-else-if="playlist">
