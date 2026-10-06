@@ -30,7 +30,9 @@ const ticket = ref('');
 const profile = ref<AccountProfile | null>(null);
 const selectedMode = ref<'server' | 'local' | null>(null);
 
+const POLL_INTERVAL_MS = 2000;
 let timer: number | null = null;
+let polling = false;
 
 const platformLabel = computed(() => (props.platform ? PLATFORM_LABEL[props.platform] : ''));
 const showLoginTypePicker = computed(() => props.platform === 'qq' && step.value === 'scan');
@@ -47,10 +49,24 @@ const statusText: Record<BindStatus, string> = {
 };
 
 function stopPolling(): void {
+  polling = false;
   if (timer !== null) {
-    window.clearInterval(timer);
+    window.clearTimeout(timer);
     timer = null;
   }
+}
+
+/**
+ * 安排下一次轮询。
+ *
+ * 用「上一次跑完再安排下一次」（setTimeout 自调度）而不是 setInterval：后者在上一次还没回来时
+ * 会继续发新请求，而微信那条的状态查询本身是一次最长 35 秒的长轮询 —— 于是「用户一确认」
+ * 会有好几个请求同时醒来、各自拿同一个**一次性 code** 去换凭据，一个成功其余全被 QQ 回
+ * 「登录鉴权参数无效或已过期」（弹窗里显示为「上游返回 400」）。
+ */
+function schedulePoll(): void {
+  if (!polling) return;
+  timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
 }
 
 /**
@@ -90,7 +106,8 @@ async function start(): Promise<void> {
     qrImage.value = result.qrImage;
     identifier.value = result.identifier;
     step.value = 'scan';
-    timer = window.setInterval(() => void poll(), 2000);
+    polling = true;
+    schedulePoll();
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '二维码获取失败');
     close();
@@ -118,6 +135,9 @@ async function poll(): Promise<void> {
     stopPolling();
     status.value = 'error';
     message.value = error instanceof Error ? error.message : '轮询失败';
+  } finally {
+    // 单次跑完才安排下一次：不重叠，避免同一条一次性 code 被并发换取。
+    schedulePoll();
   }
 }
 
@@ -135,6 +155,23 @@ const scanHint = computed(() => {
   if (loginType.value === 'wx') return '打开微信扫一扫，扫描后请在手机上确认登录';
   if (loginType.value === 'mobile') return '打开 QQ 音乐 App → 左上角菜单 → 扫一扫';
   return '打开手机 QQ 扫一扫，扫描后请在手机上确认登录';
+});
+
+/**
+ * 已经扫到码、正等你在手机上确认的那一段。
+ * 这时候二维码本身没用了：糊掉它，把视线让给"接下来在手机上做什么"。
+ */
+const scanned = computed(() => status.value === 'scanned' || status.value === 'confirmed');
+
+/**
+ * 压在二维码上的那句，按逗号**刻意**断成两行。
+ *
+ * 不交给自动换行：CJK 没有词边界，`text-wrap: balance` 会把「手机」劈到两行去；而按宽度硬凑
+ * （14px 刚好一行）又太依赖字体度量。逗号断行是确定的，两行都短，居中看着像有意为之。
+ */
+const overlayLines = computed(() => {
+  const parts = statusText[status.value].split('，');
+  return parts.map((part, index) => (index < parts.length - 1 ? `${part}，` : part));
 });
 
 async function commit(): Promise<void> {
@@ -200,16 +237,21 @@ onBeforeUnmount(() => {
         <!-- 第一步：扫码 -->
         <template v-if="step === 'loading' || step === 'scan'">
           <div class="qr-area">
-            <div class="qr-frame">
+            <div class="qr-frame" :class="{ 'is-scanned': scanned }">
               <div v-if="step === 'loading'" class="qr-loading">
                 <AppIcon name="refresh" :size="26" class="spin" />
               </div>
               <img v-else :src="qrImage" alt="登录二维码" />
+              <!-- 码已扫过：把这句"接下来在手机上做什么"直接压在糊掉的二维码上。 -->
+              <div v-if="scanned" class="qr-overlay">
+                <span v-for="line in overlayLines" :key="line">{{ line }}</span>
+              </div>
             </div>
-            <p class="muted" style="text-align: center; margin: 14px 0 0">
+            <p v-if="!scanned" class="muted qr-status">
               {{ step === 'loading' ? '正在获取二维码…' : statusText[status] }}
             </p>
-            <p class="muted" style="text-align: center; font-size: 12px; margin: 6px 0 0">
+            <!-- 扫到码之后这句就撤了：文案已经挪到二维码上，这里不再重复。 -->
+            <p v-if="!scanned" class="muted qr-hint">
               {{ scanHint }}
             </p>
             <p v-if="message" class="muted" style="text-align: center; font-size: 12px; margin: 4px 0 0">
@@ -337,6 +379,7 @@ onBeforeUnmount(() => {
 }
 
 .qr-frame {
+  position: relative;
   display: grid;
   place-items: center;
   width: 208px;
@@ -346,12 +389,60 @@ onBeforeUnmount(() => {
   border-radius: var(--radius);
   background: #fff;
   box-shadow: var(--shadow-md);
+  /* 裁掉模糊放大后溢出的那圈，顺带把圆角切干净。 */
+  overflow: hidden;
+}
+
+/* 压在二维码上的那句：垫一层薄白纱，任何底纹下都读得清。 */
+.qr-overlay {
+  position: absolute;
+  inset: 0;
+  /* 竖排居中（grid 会把两行各自铺满半格，看着像上下分离）。 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--brand-600);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+/* 每行一句（断行由 overlayLines 决定，见上面的注释）。 */
+.qr-overlay span {
+  display: block;
 }
 
 .qr-frame img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  transition: filter 0.3s ease, transform 0.3s ease;
+}
+
+/*
+ * 扫到码之后二维码就没用了：糊掉它，视线自然落到下面那句提示上。
+ * 略微放大是为了盖住模糊在边缘取样到背景时产生的虚边。
+ */
+.qr-frame.is-scanned img {
+  filter: blur(7px) saturate(0.6);
+  transform: scale(1.08);
+}
+
+/* 还没扫到时的那句状态说明（扫到码之后它会挪到二维码上，见 .qr-overlay）。 */
+.qr-status {
+  margin: 14px 0 0;
+  text-align: center;
+}
+
+/* 「怎么扫」那句：只在还没扫到时出现。 */
+.qr-hint {
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 12px;
 }
 
 .qr-loading {

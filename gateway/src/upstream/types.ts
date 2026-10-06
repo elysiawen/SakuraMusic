@@ -128,6 +128,11 @@ export interface AccountProfile {
   avatar?: string;
   userId?: string;
   vip?: boolean;
+  /**
+   * 这份凭据是哪种登录拿到的（`wx` = 微信扫码，`qq` = QQ 扫码）。
+   * 只有 QQ 音乐有两种登录方式，且两者的坑完全不同，所以值得在界面上标出来。
+   */
+  login?: 'qq' | 'wx';
 }
 
 /** 扫码成功后经用户选择落地的凭据。 */

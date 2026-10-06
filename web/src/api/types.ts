@@ -62,6 +62,8 @@ export interface AccountProfile {
   avatar?: string;
   userId?: string;
   vip?: boolean;
+  /** 凭据是哪种登录拿到的（`wx` = 微信扫码，`qq` = QQ 扫码），界面上标在昵称旁。 */
+  login?: 'qq' | 'wx';
 }
 
 export interface PlatformStatus {

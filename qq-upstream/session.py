@@ -83,10 +83,18 @@ def credential_from_cookie(header: str) -> Credential | None:
 
 
 def credential_payload(credential: Credential | None) -> dict[str, Any] | None:
-    """凭据序列化：**不带别名**，与原 web 层（`response_model_by_alias=False`）一致。"""
+    """凭据序列化：**不带别名**，与原 web 层（`response_model_by_alias=False`）一致。
+
+    另外 `musicid` 一律以**字符串**送出：微信登录用的是 19 位伪 uin（例如
+    `1152921505385169135`），超过 JS `Number` 的 53 位精度 —— Node 网关 `JSON.parse` 会把它
+    四舍五入成 `1152921505385169200`，再拿去鉴权就一律 `code=1000`（「登录鉴权参数无效或已过期」）。
+    上游是 Python，int 本身是精确的，别让这个精度在序列化那一步丢掉。
+    """
     if credential is None:
         return None
-    return credential.model_dump(mode="json")
+    payload = credential.model_dump(mode="json")
+    payload["musicid"] = str(credential.musicid)
+    return payload
 
 
 def dump_model(value: Any) -> Any:
@@ -142,6 +150,10 @@ class QrSessions:
     def __init__(self, ttl: float = QR_TTL_SECONDS) -> None:
         self._ttl = ttl
         self._items: dict[str, tuple[QR, float]] = {}
+        # 轮询去重用的两张表（见 result / latest 的注释）与在途标记。
+        self._settled: dict[str, tuple[dict[str, Any], float]] = {}
+        self._latest: dict[str, tuple[dict[str, Any], float]] = {}
+        self._inflight: set[str] = set()
 
     def put(self, qrcode: QR) -> None:
         self._sweep()
@@ -159,10 +171,45 @@ class QrSessions:
         self._sweep()
         return len(self._items)
 
+    def result(self, identifier: str) -> dict[str, Any] | None:
+        """终态结论（成功时含凭据）。
+
+        有它就直接照原样再答一次，**绝不再去换一次 code** —— 二维码的 code 是一次性的，
+        换第二次 QQ 会回 `code=1000`（见 `routes/login.py` 的 `qrcode_status`）。
+        """
+        self._sweep()
+        item = self._settled.get(identifier)
+        return item[0] if item else None
+
+    def remember_result(self, identifier: str, payload: dict[str, Any]) -> None:
+        self._settled[identifier] = (payload, time.monotonic())
+
+    def latest(self, identifier: str) -> dict[str, Any] | None:
+        """上一次查到的状态（可能还是 waiting/scanned）：已有请求在途时用它兜底回答。"""
+        self._sweep()
+        item = self._latest.get(identifier)
+        return item[0] if item else None
+
+    def remember_latest(self, identifier: str, payload: dict[str, Any]) -> None:
+        self._latest[identifier] = (payload, time.monotonic())
+
+    def busy(self, identifier: str) -> bool:
+        """这个二维码是否已有一个在途查询。"""
+        return identifier in self._inflight
+
+    def begin(self, identifier: str) -> None:
+        self._inflight.add(identifier)
+
+    def end(self, identifier: str) -> None:
+        self._inflight.discard(identifier)
+
     def _sweep(self) -> None:
         deadline = time.monotonic() - self._ttl
         for key in [key for key, (_, at) in self._items.items() if at < deadline]:
             del self._items[key]
+        for store in (self._settled, self._latest):
+            for key in [key for key, (_, at) in store.items() if at < deadline]:
+                del store[key]
 
 
 qr_sessions = QrSessions()

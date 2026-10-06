@@ -96,7 +96,17 @@ export async function registerCredentialRoutes(app: FastifyInstance): Promise<vo
 
     const refreshed = await vault.refreshServerCredential(user.id, platformParam);
     if (!refreshed) {
-      return { mode: 'server' as const, valid: false, message: '该平台尚未在服务器保存凭据' };
+      /*
+       * 两种失败要分开说，否则用户不知道该去绑定还是该重新扫码：
+       *  - 库里没有凭据 → 让他去绑定；
+       *  - 有凭据但上游没换出新的 → 只能重新扫码（凭据本身已经不被承认）。
+       */
+      const bound = await vault.hasServerCredential(user.id, platformParam);
+      return {
+        mode: 'server' as const,
+        valid: false,
+        message: bound ? '上游没有换出新凭据，请重新扫码登录' : '该平台尚未在服务器保存凭据',
+      };
     }
     return { mode: 'server' as const, valid: true, profile: refreshed.profile };
   });
@@ -109,8 +119,28 @@ export async function registerCredentialRoutes(app: FastifyInstance): Promise<vo
     if (!cookie) return { bound: false, valid: false };
 
     if (platform === 'qq') {
-      const expired = await qq.checkExpired(cookie).catch(() => true);
-      return { bound: true, valid: !expired };
+      let expired: boolean;
+      try {
+        expired = await qq.checkExpired(cookie);
+      } catch {
+        // 上游不可用：别把它当成"凭据失效"，更别顺手刷新。
+        return { bound: true, valid: false };
+      }
+      if (!expired) return { bound: true, valid: true };
+
+      /*
+       * 上游说这份凭据不被认 —— 先别急着报失效，刷新一次再说：能换出一份可用的就自愈了，
+       * 换不出来再如实报失效（前端会提示重新扫码）。
+       *
+       * 「仅本机」模式的凭据不在服务器上，这里不能替它刷新（前端拿着凭据头去调 /refresh 更合适）。
+       */
+      const isLocal = Boolean(vault.readLocalCredentials(request)[platform]);
+      if (isLocal) return { bound: true, valid: false };
+
+      const refreshed = await vault.refreshServerCredential(user.id, platform).catch(() => null);
+      if (!refreshed) return { bound: true, valid: false };
+      const stillExpired = await qq.checkExpired(refreshed.cookie).catch(() => true);
+      return { bound: true, valid: !stillExpired, profile: refreshed.profile };
     }
     const profile = await netease.loginProfile(cookie).catch(() => null);
     return { bound: true, valid: profile !== null, profile: profile ?? undefined };

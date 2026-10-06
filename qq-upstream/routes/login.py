@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -68,37 +69,79 @@ async def create_qrcode(login_type: str) -> dict[str, object]:
     )
 
 
-@router.get("/qrcode/{login_type}/status")
-async def qrcode_status(login_type: str, identifier: str = Query(...)) -> dict[str, object]:
-    """查询扫码状态。"""
-    kind = _login_type(login_type)
-
-    # 会话不在表里（服务重启、二维码已过期被清）时，仍然照原 web 层的做法用占位对象去查：
-    # 上游自己会回 TIMEOUT/REFUSE，前端因此能拿到真实结论，而不是一句「会话不存在」。
-    qrcode = qr_sessions.get(identifier) or QR(
-        data=b"",
-        qr_type=kind,
-        mimetype="image/png",
-        identifier=identifier,
-    )
-
-    async with open_client(None) as client:
-        result = await client.login.check_qrcode(qrcode)
-
-    event = _EVENT_CODES.get(result.event, -1)
-    if result.event in _TERMINAL_EVENTS:
-        qr_sessions.drop(identifier)
-
+def _status_payload(
+    kind: QRLoginType,
+    identifier: str,
+    event: int,
+    done: bool,
+    credential: dict[str, Any] | None,
+) -> dict[str, object]:
+    """状态应答（形状与原 web 层一致：只有登录成功才带 `credential`）。"""
     return ok(
         {
             "event": event,
-            "done": bool(result.done),
-            # 只有登录成功才带凭据；其余情况给 null（形状与原 web 层一致）。
-            "credential": credential_payload(result.credential) if event == 0 else None,
+            "done": done,
+            "credential": credential,
             "identifier": identifier,
             "login_type": kind.value,
         }
     )
+
+
+@router.get("/qrcode/{login_type}/status")
+async def qrcode_status(login_type: str, identifier: str = Query(...)) -> dict[str, object]:
+    """查询扫码状态。
+
+    这个接口对同一个二维码必须是**幂等**的：微信那条换凭据用的 `code` 是一次性的，
+    拿它换第二次，QQ 会回 `code=1000`（SDK 抛 `LoginAuthExpiredError`），
+    在网关那边就变成「上游返回 400：登录鉴权参数无效或已过期」。
+
+    而微信的状态查询本身就是一次最长 35 秒的**长轮询**：客户端只要轮询有一点重叠，
+    「用户一确认」就会有好几个请求同时醒来、拿同一个 `code` 去换 —— 一个成功，其余全报 400。
+    所以这里做两件事：终态结论缓存下来重复回答；同一二维码同时只允许一个在途查询，
+    其余请求立刻回上一次的状态（不排队，也不并发换码）。
+    """
+    kind = _login_type(login_type)
+
+    settled = qr_sessions.result(identifier)
+    if settled is not None:
+        return settled
+
+    if qr_sessions.busy(identifier):
+        return qr_sessions.latest(identifier) or _status_payload(kind, identifier, 1, False, None)
+
+    qr_sessions.begin(identifier)
+    try:
+        # 会话不在表里（服务重启、二维码已过期被清）时，仍然照原 web 层的做法用占位对象去查：
+        # 上游自己会回 TIMEOUT/REFUSE，前端因此能拿到真实结论，而不是一句「会话不存在」。
+        qrcode = qr_sessions.get(identifier) or QR(
+            data=b"",
+            qr_type=kind,
+            mimetype="image/png",
+            identifier=identifier,
+        )
+
+        async with open_client(None) as client:
+            result = await client.login.check_qrcode(qrcode)
+
+        event = _EVENT_CODES.get(result.event, -1)
+        payload = _status_payload(
+            kind,
+            identifier,
+            event,
+            bool(result.done),
+            # 只有登录成功才带凭据；其余情况给 null（形状与原 web 层一致）。
+            credential_payload(result.credential) if event == 0 else None,
+        )
+
+        qr_sessions.remember_latest(identifier, payload)
+        if result.event in _TERMINAL_EVENTS:
+            qr_sessions.remember_result(identifier, payload)
+            qr_sessions.drop(identifier)
+
+        return payload
+    finally:
+        qr_sessions.end(identifier)
 
 
 @router.get("/refresh_credential")

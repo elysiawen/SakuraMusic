@@ -106,7 +106,24 @@ export function parseQqCookie(cookie: string): Record<string, unknown> {
 export function qqProfileFromCredential(cookie: string, fallback?: AccountProfile): AccountProfile {
   const raw = parseQqCookie(cookie);
   const musicid = str(raw.musicid);
-  return fallback ?? { nickname: musicid ? `QQ 音乐用户 ${musicid}` : 'QQ 音乐用户' };
+  return fallback ?? { nickname: musicid ? `QQ 音乐用户 ${musicid}` : 'QQ 音乐用户', login: qqLoginKind(raw) };
+}
+
+/**
+ * 这份凭据是哪种登录拿到的。
+ *
+ * 先看凭据里的 `login_type`（上游给的是 1 = 微信、2 = QQ）；读不到就按 **musickey 前缀**判断：
+ * 微信登录签出来的 key 一律以 `W_X` 开头，QQ 登录的是 `Q_H` 那一路 —— 实测两条链路各自的前缀都稳定，
+ * 而 `login_type` 在老凭据的 Cookie 里没带上（见 `CREDENTIAL_COOKIE_FIELDS`），所以这条兜底必须有。
+ */
+export function qqLoginKind(raw: Record<string, unknown> | undefined): 'qq' | 'wx' | undefined {
+  if (!raw) return undefined;
+  const type = Number(raw.login_type ?? raw.loginType ?? 0);
+  if (type === 1) return 'wx';
+  if (type === 2) return 'qq';
+  const musickey = str(raw.musickey);
+  if (!musickey) return undefined;
+  return musickey.startsWith('W_X') ? 'wx' : 'qq';
 }
 
 /* ------------------------------ 数据映射 ------------------------------ */
@@ -625,10 +642,11 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
   const raw = cookie ? parseQqCookie(cookie) : {};
   const musicid = str(raw.musicid);
   const encryptUin = str(raw.encrypt_uin);
-  // musicid 即 QQ 号：前端据此拼 qlogo 头像地址，所以即使拿不到昵称也要带上。
+  // musicid 即 QQ 号：前端在上游没给头像时据此拼 qlogo 兜底，所以即使拿不到昵称也要带上。
   const base: AccountProfile = {
     nickname: musicid ? `QQ 音乐用户 ${musicid}` : 'QQ 音乐用户',
     userId: musicid || undefined,
+    login: qqLoginKind(raw),
   };
 
   if (!encryptUin) return base;
@@ -644,13 +662,19 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
      * 并没有 `header` 这一层。以前按 `data.header` 找，取不到就退化读顶层，于是 `nick` / `logo`
      * 全部落空，用户永远看到「QQ 音乐用户 <QQ号>」——现在按真实契约读。
      *
+     * 字段名以 SDK 模型为准（App 里只有这两个，没有别的别名）：
+     *   class UserHomepageBaseInfo: EncryptedUin / Name / **Avatar** / BackgroundImage / UserType
+     * 所以这里不再并列 `nick` / `nickname` / `logo` / `headurl` / `pic` 那些猜出来的名字 ——
+     * 它们永远不会命中，摆着只会让人误以为上游给了多个候选字段。
+     *
      * 另外这里**不再报 `vip`**：会员信息不在此接口内，硬填 false 等于把「不知道」说成「不是会员」。
      */
     const info = asObj(data.base_info ?? data);
     return {
-      nickname: firstStr(info.name, info.nick, info.nickname, base.nickname),
-      avatar: firstStr(info.avatar, info.logo, info.headurl, info.pic) || undefined,
+      nickname: firstStr(info.name, base.nickname),
+      avatar: firstStr(info.avatar) || undefined,
       userId: musicid || undefined,
+      login: base.login,
     };
   } catch {
     return base;
@@ -728,12 +752,19 @@ export async function refreshCredential(cookie: string): Promise<Record<string, 
   return Object.keys(data).length > 0 ? data : null;
 }
 
+/**
+ * 凭据是否已失效。
+ *
+ * 这个接口把布尔折进了信封（见 `qq-upstream/routes/login.py`：过期 → `code=-1`，正常 → `code=0, data=null`），
+ * 所以这里**显式读 `code`**，不能用 `unwrap` —— 它见非零 code 就抛，会把「上游明确说过期」和
+ * 「上游不可达」混成同一个异常，调用方也就分不出该提示重新扫码、还是该让他稍后再试。
+ *
+ * 现在：过期 → true；正常 → false；网络/HTTP 故障 → 抛出，由调用方定夺。
+ * 别改回 `data === true`：那个值永远是 null，等于把判断悄悄寄托在「抛没抛异常」上。
+ */
 export async function checkExpired(cookie: string): Promise<boolean> {
-  const data = unwrap(
-    await upstreamJson<RawResponse>(BASE, '/login/check_expired', { cookie }),
-    '/login/check_expired',
-  );
-  return data === true;
+  const response = await upstreamJson<RawResponse>(BASE, '/login/check_expired', { cookie });
+  return num(response.code) !== 0;
 }
 
 /* ------------------- QQ 音乐客户端（App）扫码登录 ------------------- */

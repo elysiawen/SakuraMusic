@@ -110,22 +110,41 @@ export async function listServerCredentials(userId: string): Promise<StoredCrede
     last_error: string | null;
     last_checked_at: Date | null;
     updated_at: Date;
+    iv: Buffer;
+    tag: Buffer;
+    ciphertext: Buffer;
   }>(
-    `select id, platform, profile, status, last_error, last_checked_at, updated_at
+    `select id, platform, profile, status, last_error, last_checked_at, updated_at, iv, tag, ciphertext
        from credentials where user_id = $1 order by updated_at desc`,
     [userId],
   );
   return rows
     .filter((row) => isPlatform(row.platform))
-    .map((row) => ({
-      id: String(row.id),
-      platform: row.platform as Platform,
-      profile: row.profile ?? { nickname: '' },
-      status: row.status,
-      last_error: row.last_error,
-      last_checked_at: row.last_checked_at,
-      updated_at: row.updated_at,
-    }));
+    .map((row) => {
+      const profile: AccountProfile = row.profile ?? { nickname: '' };
+      if (row.platform === 'qq') {
+        /*
+         * 登录方式（QQ 扫码 / 微信扫码）现算一次，而不是只靠 profile 里存的：
+         * 这次改动之前存下的老凭据，profile 里根本没有 `login` 字段，但它们一样该显示标记。
+         * 代价很小（一次 AES 解一个不到 1KB 的 blob），解密失败就少个标记，不影响列表。
+         */
+        try {
+          const login = qq.qqLoginKind(parseBlob(row).raw);
+          if (login) profile.login = login;
+        } catch {
+          // 忽略：只是少一个标记。
+        }
+      }
+      return {
+        id: String(row.id),
+        platform: row.platform as Platform,
+        profile,
+        status: row.status,
+        last_error: row.last_error,
+        last_checked_at: row.last_checked_at,
+        updated_at: row.updated_at,
+      };
+    });
 }
 
 async function loadServerBundle(userId: string, platform: Platform): Promise<StoredBlob | null> {
@@ -139,6 +158,11 @@ async function loadServerBundle(userId: string, platform: Platform): Promise<Sto
   } catch {
     throw badRequest('凭据解密失败，可能是 CREDENTIAL_KEY 已更换，请重新绑定该平台账号', 'credential_decrypt_failed');
   }
+}
+
+/** 服务器上是否存着这个平台的凭据（用来区分「没绑过」与「刷新被上游拒绝」这两种失败）。 */
+export async function hasServerCredential(userId: string, platform: Platform): Promise<boolean> {
+  return (await loadServerBundle(userId, platform)) !== null;
 }
 
 /** 记录凭据异常，便于设置页提示用户重新登录。 */
@@ -180,7 +204,14 @@ export async function refreshServerCredential(
     const current = await loadServerBundle(userId, platform);
     if (!current) return null;
     const refreshed = await qq.refreshCredential(current.cookie);
-    if (!refreshed) return current;
+    /*
+     * 上游没换出新凭据时返回 **null**，不能把旧凭据当成刷新结果交回去。
+     *
+     * 调用方（`/api/credentials/:platform/refresh`）靠「拿到没拿到」判断成败，交回旧凭据等于谎报成功：
+     * 用户看到「凭据已刷新」，一刷新页面又变回「凭据可能已失效」（凭据压根没变）。
+     * 自动刷新那条路（resolveCredential）拿到 null 会照旧沿用原凭据，行为不变。
+     */
+    if (!refreshed) return null;
 
     const cookie = qq.buildQqCookie(refreshed);
     const profile = await qq.loginProfile(cookie).catch(() => current.profile);

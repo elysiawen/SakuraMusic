@@ -137,15 +137,45 @@ export async function pollBind(
     return { platform, status: result.status, message: result.message };
   }
 
-  const cookie = qq.buildQqCookie(result.credential);
+  let credential = result.credential;
+  let cookie = qq.buildQqCookie(credential);
   if (!cookie) return { platform, status: 'error', message: '登录成功但凭据为空，请重试' };
+
+  /*
+   * 扫码成功 ≠ 凭据可用，绑定这一刻就顺手验一次，别让用户绑完才发现问题。
+   *
+   * 上游若说这份凭据不被认，就再刷一次试试（换一份新的）；两次都不行才拦下来并说明原因。
+   * 校验本身抛错（上游不可达）不算"不可用"，照旧放行：否则一次网络抖动就会把正常绑定挡在门外。
+   */
+  const isUsable = (value: string) => qq.checkExpired(value).then((expired) => !expired);
+  let usable = await isUsable(cookie).catch(() => null);
+  if (usable === false) {
+    const refreshed = await qq.refreshCredential(cookie).catch(() => null);
+    const refreshedCookie = refreshed ? qq.buildQqCookie(refreshed) : '';
+    usable = refreshedCookie ? await isUsable(refreshedCookie).catch(() => null) : false;
+    if (usable && refreshed) {
+      credential = refreshed;
+      cookie = refreshedCookie;
+    }
+  }
+  if (usable === false) {
+    return {
+      platform,
+      status: 'error',
+      message:
+        type === 'wx'
+          ? '微信登录拿到的凭据不被 QQ 承认，刷新也没能换到可用的（这条扫码方式目前用不了），请改用「手机 QQ 扫码」或「QQ音乐扫码」'
+          : '登录成功但凭据不可用（QQ 返回未登录），请重新扫码',
+    };
+  }
+
   const profile = await qq
     .loginProfile(cookie)
     .catch(() => qq.qqProfileFromCredential(cookie));
   return {
     platform,
     status: 'success',
-    ...stage(platform, { platform, cookie, profile, raw: result.credential }),
+    ...stage(platform, { platform, cookie, profile, raw: credential }),
   };
 }
 

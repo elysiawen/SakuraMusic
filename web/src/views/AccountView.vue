@@ -46,17 +46,35 @@ const localCount = computed(() => credentials.localItems.length);
 /**
  * 已绑定账号可用于展示的头像地址，「一键取用」和下面的凭据卡片共用。
  *
- * - 网易云：直接用它自己返回的头像地址。
- * - QQ：走 qlogo CDN，`nk` 就是 QQ 号（凭据里的 musicid）。微信登录拿不到 QQ 号，
- *   此时退回上游返回的头像；再没有就交给占位图，不伪造。
+ * **以上游返回的头像为准**：QQ 音乐的主页接口在 `Info.BaseInfo.Avatar` 里直接给一个头像链接 ——
+ * QQ 号账号给 QQ 头像，微信登录的账号给微信头像（`thirdwx.qlogo.cn`），两者都是对的。
+ * 上游是唯一的真相来源，我们不去猜。
+ *
+ * qlogo 只在**上游没给**时兜底（绑定时主页接口失败会退化到只从 cookie 读 musicid，那里没有头像），
+ * 它唯一的好处是尺寸可自选（`s=640`，高分屏更清楚），但只能用在真 QQ 号上：
+ * 微信登录时 musicid 是 19 位伪 uin（≈2^60，例如 1152921505385169200），拼 qlogo 只会得到坏图。
  */
+const QQ_NUMBER = /^\d{5,11}$/;
+
 function platformAvatarUrl(platform: Platform): string {
   const profile = credentials.profileOf(platform);
+  const fromUpstream = profile?.avatar?.trim() ?? '';
+  if (fromUpstream) return fromUpstream;
+
   if (platform === 'qq') {
-    const qqNumber = profile?.userId?.trim();
-    if (qqNumber) return `https://q1.qlogo.cn/g?b=qq&nk=${qqNumber}&s=640`;
+    const qqNumber = profile?.userId?.trim() ?? '';
+    // 真 QQ 号是 5~11 位；伪 uin 是 19 位，必须排除，否则拼出来就是坏链。
+    if (QQ_NUMBER.test(qqNumber)) return `https://q1.qlogo.cn/g?b=qq&nk=${qqNumber}&s=640`;
   }
-  return profile?.avatar ?? '';
+  return '';
+}
+
+/** 昵称旁边那个小标记：这份凭据是哪种登录拿到的。 */
+const LOGIN_LABEL: Record<'qq' | 'wx', string> = { qq: 'QQ 登录', wx: '微信登录' };
+
+function loginLabel(platform: Platform): string {
+  const login = profileOf(platform)?.login;
+  return login ? LOGIN_LABEL[login] : '';
 }
 
 const avatarPresets = computed(() => [
@@ -68,9 +86,11 @@ const avatarPresets = computed(() => [
   },
   {
     key: 'qq',
-    label: 'QQ 头像',
+    // 叫「QQ 音乐头像」而不是「QQ 头像」：微信登录的账号这里取到的是微信头像，
+    // 两者都是"这个 QQ 音乐账号的头像"，按平台命名才不含糊。
+    label: 'QQ 音乐头像',
     url: platformAvatarUrl('qq'),
-    reason: '未绑定 QQ 账号，或该账号取不到 QQ 号（微信登录暂时拿不到）',
+    reason: '未绑定 QQ 音乐账号，或该账号没有返回头像',
   },
 ]);
 
@@ -174,8 +194,20 @@ async function refresh(platform: Platform): Promise<void> {
     } else {
       await credentials.refreshLists();
     }
-    statusMap.value[platform] = { bound: true, valid: true };
-    toast.success(`${PLATFORM_LABEL[platform]}凭据已刷新`);
+    /*
+     * 不要乐观写 valid: true。这里只说明「刷新这个请求成功了」，凭据到底能不能用要问状态接口 ——
+     * 乐观置真正是「提示刷新成功、一刷新页面又变回『凭据可能已失效』」的来源：
+     * 上游没换出新凭据时（见 gateway 的 refreshServerCredential），芯片先骗自己一次，重新进页面才露馅。
+     */
+    const status = await credentialApi
+      .status(platform)
+      .catch(() => ({ bound: true, valid: false }));
+    statusMap.value[platform] = status;
+    if (status.valid) {
+      toast.success(`${PLATFORM_LABEL[platform]}凭据已刷新`);
+    } else {
+      toast.error(`${PLATFORM_LABEL[platform]}凭据刷新后仍不可用，请重新扫码登录`);
+    }
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '刷新失败');
   } finally {
@@ -253,11 +285,6 @@ async function onBound(): Promise<void> {
                 />
                 {{ preset.label }}
               </button>
-
-              <span class="avatar-preset is-unavailable" title="微信登录目前拿不到头像地址">
-                <CoverArt :size="24" radius="999px" fallback-icon="user" seed="wechat" />
-                微信头像 · 暂不可用
-              </span>
             </div>
           </div>
           <div class="row" style="gap: 10px">
@@ -291,7 +318,7 @@ async function onBound(): Promise<void> {
       <div class="cred-grid">
         <div v-for="platform in platforms" :key="platform" class="cred-card">
           <div class="row" style="gap: 12px">
-            <!-- 头像与「一键取用」用同一套来源：QQ 走 qlogo，微信登录则退回上游头像或占位图 -->
+            <!-- 头像与「一键取用」用同一套来源：以上游返回的头像为准，没给时才退到 qlogo 或占位图 -->
             <CoverArt
               :src="platformAvatarUrl(platform)"
               :size="46"
@@ -314,9 +341,15 @@ async function onBound(): Promise<void> {
                   {{ modeOf(platform) === 'server' ? '服务器保存' : '仅本机' }}
                 </span>
               </div>
-              <span class="muted truncate" style="font-size: 12px">
-                {{ modeOf(platform) ? (profileOf(platform)?.nickname ?? '已绑定') : '未绑定' }}
-              </span>
+              <!-- 昵称旁边标出是哪种登录拿到的（微信扫码 / QQ 扫码），两条链路的脾气完全不同。 -->
+              <div class="row" style="gap: 6px; min-width: 0; font-size: 12px">
+                <span class="muted truncate" style="min-width: 0">
+                  {{ modeOf(platform) ? (profileOf(platform)?.nickname ?? '已绑定') : '未绑定' }}
+                </span>
+                <span v-if="loginLabel(platform)" class="tag" style="color: var(--text-soft); flex: none">
+                  {{ loginLabel(platform) }}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -406,14 +439,13 @@ async function onBound(): Promise<void> {
   transition: all 0.18s ease;
 }
 
-.avatar-preset:hover:not(:disabled):not(.is-unavailable) {
+.avatar-preset:hover:not(:disabled) {
   color: var(--brand-600);
   border-color: var(--brand-300);
   transform: translateY(-1px);
 }
 
-.avatar-preset:disabled,
-.avatar-preset.is-unavailable {
+.avatar-preset:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
