@@ -11,7 +11,11 @@ function assertPlatform(value: string): Platform {
   return value;
 }
 
-const QUALITIES = new Set(['standard', 'high', 'lossless', 'hires']);
+/**
+ * 允许的档位参数。少一个就会在 `/api/play/resolve` 被 400 挡掉 ——
+ * 音质面板里刚点完就报「不支持的音质参数」。
+ */
+const QUALITIES = new Set(['standard', 'high', 'lossless', 'hires', 'spatial', 'master', 'surround']);
 
 const SEARCH_TYPES = new Set(['song', 'artist', 'album', 'playlist']);
 
@@ -95,6 +99,11 @@ export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
       // 需要客户端能设置请求头（桌面/原生），或该平台不校验防盗链。
       direct: { url: resolved.url, headers: resolved.headers },
       quality,
+      /*
+       * 实际拿到的档位。与 `quality` 不一致就说明降级了 —— 前端据此把"为什么不能播"说清楚。
+       * 别把 `quality`（请求值）当实情：那正是"选了无损、其实在听高品"这种错觉的来源。
+       */
+      actualQuality: resolved.quality,
       trial: resolved.trial,
     };
   });

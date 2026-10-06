@@ -12,7 +12,7 @@ import { config } from '../config';
 import { upstreamFetch } from '../upstream/http';
 import { ApiError, badRequest, upstreamError } from '../lib/errors';
 import { openToken, sealToken } from '../lib/crypto';
-import type { Platform } from '../upstream/types';
+import type { Platform, Quality } from '../upstream/types';
 import { isPlatform } from '../upstream/types';
 import * as netease from '../upstream/netease';
 import * as qq from '../upstream/qq';
@@ -32,6 +32,8 @@ interface CachedUrl {
   url: string;
   /** 是否只能拿到试听片段（受版权/会员限制）。 */
   trial: boolean;
+  /** 实际拿到的档位（降级链落到了哪一档）。 */
+  quality?: Quality;
   expiresAt: number;
 }
 
@@ -39,11 +41,15 @@ interface CachedUrl {
 interface ResolvedUrl {
   url: string;
   trial: boolean;
+  /** 实际拿到的档位；拿不到就缺省。 */
+  quality?: Quality;
 }
 
 export interface ResolvedStream {
   url: string;
   trial: boolean;
+  /** 实际拿到的档位（请求的档位没拿到时，前端要靠它说清"为什么"）。 */
+  quality?: Quality;
   /** 直连播放时客户端需要自行附加的请求头（见 `directHeaders`）。 */
   headers: Record<string, string>;
 }
@@ -101,17 +107,31 @@ function parseToken(token: string): StreamTokenPayload {
 async function resolveUpstreamUrl(payload: StreamTokenPayload): Promise<ResolvedUrl> {
   const key = cacheKey(payload.p, payload.i, payload.q, payload.c);
   const cached = urlCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return { url: cached.url, trial: cached.trial };
+  if (cached && cached.expiresAt > Date.now()) {
+    return { url: cached.url, trial: cached.trial, quality: cached.quality };
+  }
 
   let resolved: ResolvedUrl | null = null;
 
   if (payload.p === 'netease') {
     const audio = await netease.resolveAudioUrl(payload.i, payload.q, payload.c);
-    if (audio) resolved = { url: audio.url, trial: audio.trial };
+    if (audio) {
+      resolved = {
+        url: audio.url,
+        trial: audio.trial,
+        quality: netease.neteaseQualityOfLevel(audio.level),
+      };
+    }
   } else {
     // QQ 音乐的取流接口不区分试听片段（无权限时直接不给 purl）。
     const audio = await qq.resolveAudioUrl(payload.i, payload.q, payload.c);
-    if (audio) resolved = { url: audio.url, trial: false };
+    if (audio) {
+      resolved = {
+        url: audio.url,
+        trial: false,
+        quality: qq.qqQualityOfFileType(audio.fileType),
+      };
+    }
   }
 
   if (!resolved) {

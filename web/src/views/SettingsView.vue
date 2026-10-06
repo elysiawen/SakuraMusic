@@ -17,7 +17,19 @@ const theme = useThemeStore();
 const toast = useToast();
 
 const platforms: Platform[] = ['netease', 'qq'];
-const qualities: Quality[] = ['standard', 'high', 'lossless', 'hires'];
+/*
+ * 默认音质的候选。高级档（高清臻音 / 超清母带 / 沉浸环绕声）也要列出来：音质面板里选了它们就会写进
+ * 这个偏好，设置页要是没有对应的芯片，用户会发现"面板里选了、这里却没有任何一个是选中的"。
+ */
+const qualities: Quality[] = [
+  'standard',
+  'high',
+  'lossless',
+  'hires',
+  'spatial',
+  'master',
+  'surround',
+];
 
 /*
  * 取流方式按平台分别设置（智能 / 直连 / 中转）。
@@ -60,6 +72,33 @@ function retryDirect(): void {
   player.resetProxyOnly();
   toast.success(`已清除 ${count} 个平台的直连记录，下次播放会重新尝试直连`);
 }
+
+/**
+ * 「关于」里列出来的**上游**项目。
+ *
+ * 只列真正的上游（网易云与 QQ 音乐这两条链路各自依赖了什么），框架/库不进这里。
+ * 地址一律用官方仓库（取自 `scripts/bootstrap.mjs` 的克隆地址与 PyPI 包元数据，不是凭印象写的）；
+ * 用途写清楚"它在本项目里干什么"，否则一堆库名看不出所以然。
+ */
+const CREDITS = [
+  {
+    group: '音乐上游',
+    items: [
+      {
+        name: 'api-enhanced',
+        note: '网易云音乐上游（MIT）。本仓库不含其源码，只在同级目录以独立进程 + HTTP 使用',
+        url: 'https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced',
+      },
+      {
+        name: 'QQMusicApi / qqmusic-api-python',
+        note: 'QQ 音乐 SDK（GPLv3，PyPI 发布版 0.7.3）。本仓库自带的 qq-upstream 基于它实现三种扫码登录',
+        url: 'https://github.com/l-1124/QQMusicApi',
+      },
+    ],
+  },
+];
+
+const REPO_URL = 'https://github.com/elysiawen/SakuraMusic';
 </script>
 
 <template>
@@ -131,6 +170,9 @@ function retryDirect(): void {
               {{ QUALITY_LABEL[quality] }}
             </button>
           </div>
+          <span class="muted" style="font-size: 11px">
+            「高清臻音」「超清母带」「沉浸环绕声」两个平台都有，但需要对应等级的会员；等级不够时会自动降级到能播的档位。
+          </span>
         </div>
 
         <div class="stack" style="gap: 8px">
@@ -213,10 +255,30 @@ function retryDirect(): void {
       </div>
       <ul class="muted" style="font-size: 12.5px; line-height: 1.9; margin: 0; padding-left: 20px">
         <li>聚合网关自身不存储任何音频文件，音频均由网关按需代理两个平台的官方 CDN 流。</li>
-        <li>网易云部分接口由第三方项目 api-enhanced 提供；QQ 音乐部分由本仓库自带的 qq-upstream 提供，它只依赖发布版 qqmusic-api-python。</li>
         <li>登录 Sakura 的会话使用 HttpOnly Cookie + 服务端 Session，密码使用 scrypt 加盐散列。</li>
         <li>音乐版权归各平台所有，本项目仅供个人学习与研究使用。</li>
       </ul>
+
+      <p class="muted credit-note" style="margin: 12px 0 0">
+        源码：
+        <a :href="REPO_URL" target="_blank" rel="noreferrer noopener">{{ REPO_URL }}</a>
+      </p>
+
+      <!--
+        用到的第三方项目：名字、用途、地址都写出来。
+        地址用官方仓库（网易云上游与 QQ 音乐 SDK 的地址取自 scripts/bootstrap.mjs 的克隆地址与 PyPI 包元数据），
+        方便自行核对版本与许可证。
+      -->
+      <div v-for="credit in CREDITS" :key="credit.group" class="credit-group">
+        <h3 class="credit-title">{{ credit.group }}</h3>
+        <ul class="credit-list">
+          <li v-for="item in credit.items" :key="item.url">
+            <a :href="item.url" target="_blank" rel="noreferrer noopener">{{ item.name }}</a>
+            <span v-if="item.note" class="muted credit-note">{{ item.note }}</span>
+            <code class="credit-url">{{ item.url }}</code>
+          </li>
+        </ul>
+      </div>
     </section>
   </div>
 </template>
@@ -241,6 +303,60 @@ function retryDirect(): void {
   border-color: var(--brand-300);
   border-style: solid;
   background: rgba(var(--brand-rgb), 0.05);
+}
+
+/* ------------------------- 「关于」里的第三方项目 ------------------------- */
+
+.credit-group {
+  margin-top: 14px;
+}
+
+.credit-title {
+  margin: 0 0 7px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-soft);
+}
+
+.credit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.credit-list li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+}
+
+.credit-list a {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-600);
+  text-decoration: none;
+}
+
+.credit-list a:hover {
+  text-decoration: underline;
+}
+
+.credit-note {
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 地址单独一行、等宽字体：好看清是哪个站点，也方便复制。 */
+.credit-url {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
 }
 
 .account-hint svg:last-child {

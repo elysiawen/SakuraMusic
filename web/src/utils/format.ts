@@ -44,7 +44,4 @@ export function avatarGradient(seed: string): string {
   return `linear-gradient(135deg, ${from}, ${to})`;
 }
 
-/** 音质档位的中文名，播放器里展示。 */
-export function qualityLabel(quality: string): string {
-  return { standard: '标准', high: '高品', lossless: '无损', hires: 'Hi-Res' }[quality] ?? quality;
-}
+

@@ -2,7 +2,14 @@ import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import { musicApi } from '@/api';
 import type { LyricResult } from '@/api/types';
-import type { Platform, Quality, TrackSource, UnifiedTrack } from '@/api/types';
+import {
+  PREMIUM_QUALITIES,
+  qualityLabel,
+  type Platform,
+  type Quality,
+  type TrackSource,
+  type UnifiedTrack,
+} from '@/api/types';
 import { useToast } from '@/composables/useToast';
 import { useLibraryStore } from './library';
 
@@ -87,6 +94,15 @@ export const usePlayerStore = defineStore('player', () => {
   const volume = ref(typeof persisted.volume === 'number' ? persisted.volume : 0.8);
   const muted = ref(false);
   const quality = ref<Quality>(persisted.quality ?? 'high');
+  /**
+   * 实际拿到的档位，可能比选的低。
+   *
+   * `quality` 是「用户选的」，这个是「真正听到的」—— 平台可能因为"这首歌没这档"或
+   * "账号没权限"降级；两者不一致时界面必须把原因说出来（见 `qualityNotice`）。
+   */
+  const actualQuality = ref<Quality | null>(null);
+  /** 用户主动换档引起的那次降级要明确提示一次；自动切歌不弹，免得每首都弹一遍。 */
+  let announceQualityGap = false;
   const repeat = ref<RepeatMode>(persisted.repeat ?? 'all');
   const shuffle = ref(persisted.shuffle ?? false);
   const preferredPlatform = ref<Platform | null>(persisted.preferredPlatform ?? null);
@@ -137,6 +153,43 @@ export const usePlayerStore = defineStore('player', () => {
   const activeSource = computed<TrackSource | null>(() =>
     current.value ? pickSource(current.value, preferredPlatform.value) : null,
   );
+
+  /**
+   * 播不到所选档位时的解释。
+   *
+   * 三种情况必须分开说 —— 笼统一句「降级了」没用，用户要知道是"这首歌没有"还是"你的账号没权限"：
+   *   1. `qualities` 里没有这一档 → 这首歌压根没有这份文件（最确定的一种；
+   *      在设置里选了某档、再播一首没这档的歌时就会碰到）；
+   *   2. 有这一档，但曲目是会员/付费资源（`vip`）→ 需要会员或购买；
+   *   3. 有这一档、也不是 vip —— 平台这次没给（上游的临时限制）。
+   *
+   * 档位名按平台取（`qualityLabel`），与选择器显示的名字保持同一套，别一个说「极高」一个说「高品」。
+   * 音频本身的失败（网络、上游挂了）不走这里，那种由 `error` 负责。
+   */
+  const qualityNotice = computed(() => {
+    const wanted = quality.value;
+    const actual = actualQuality.value;
+    if (!actual || actual === wanted) return '';
+    const platform = activeSource.value?.platform;
+    const wantedLabel = qualityLabel(wanted, platform);
+    const actualLabel = qualityLabel(actual, platform);
+    const available = current.value?.qualities;
+    if (available && !available.includes(wanted)) {
+      return `这首歌没有「${wantedLabel}」，已用「${actualLabel}」播放`;
+    }
+    /*
+     * 高级档（高清臻音 / 超清母带 / 沉浸环绕声）先判：档位确实存在、平台就是不给，
+     * 两家的共同原因都是"要对应等级的会员"（QQ 回 result=104003，网易云直接不给地址）。
+     * 排在 `vip` 前面是因为它更具体 —— 这类歌多半也标着付费，但真正拦住你的是等级。
+     */
+    if (PREMIUM_QUALITIES.includes(wanted)) {
+      return `「${wantedLabel}」需要对应等级的会员，当前账号没有这一档，已用「${actualLabel}」播放`;
+    }
+    if (current.value?.vip) {
+      return `「${wantedLabel}」需要会员或购买后才能播放，已用「${actualLabel}」播放`;
+    }
+    return `平台没有提供「${wantedLabel}」，已用「${actualLabel}」播放`;
+  });
   const progress = computed(() => (duration.value > 0 ? currentTime.value / duration.value : 0));
   const hasNext = computed(() => queue.value.length > 1);
 
@@ -353,11 +406,16 @@ export const usePlayerStore = defineStore('player', () => {
   const metadataCache = new Map<string, UnifiedTrack>();
 
   /**
-   * 补全歌手 / 专辑的跳转信息。
+   * 补全歌手 / 专辑的跳转信息，以及**音质档位清单**。
    *
    * 收藏、自建歌单、播放历史里的歌曲是网关按文本存的（只留歌手名与专辑名），
    * 读回来缺少 `id` / `platform`，播放页里的歌手与专辑就退化成不可点的纯文字。
-   * 这里在播放时按需拉一次单曲详情补齐，只补不覆盖，失败也不影响播放。
+   *
+   * 档位同理：网易云的搜索与歌单结果只带基础档，高级档（高清臻音 / 超清母带 / 沉浸环绕声）
+   * 只有单曲详情里的 `privilege.maxBrLevel` 才知道 —— 不补一次的话，明明有母带的歌，
+   * 音质面板只会列出三档（网关用 `qualitiesComplete: false` 告诉我们这份清单不全）。
+   *
+   * 这里在播放时按需拉一次单曲详情，只补不覆盖，失败也不影响播放。
    */
   async function enrichMetadata(track: UnifiedTrack, position: number): Promise<void> {
     const source = track.sources[0];
@@ -365,7 +423,8 @@ export const usePlayerStore = defineStore('player', () => {
 
     const needArtists = track.artists.some((item) => !item.id || !item.platform);
     const needAlbum = !track.album.id || !track.album.platform;
-    if (!needArtists && !needAlbum) return;
+    const needQualities = track.qualitiesComplete !== true;
+    if (!needArtists && !needAlbum && !needQualities) return;
 
     const cacheKey = `${source.platform}:${source.id}`;
     let detail = metadataCache.get(cacheKey);
@@ -389,6 +448,12 @@ export const usePlayerStore = defineStore('player', () => {
     if (needAlbum && detail.album.id) {
       target.album = { ...target.album, id: detail.album.id, platform: detail.album.platform };
     }
+    if (needQualities && detail.qualities) {
+      target.qualities = detail.qualities;
+      target.qualitySizes = detail.qualitySizes;
+      // 标记成完整，免得后面每播一次都再补一次详情。
+      target.qualitiesComplete = true;
+    }
   }
 
   /** 真正发起播放：解析地址 → 设置 src → 播放。 */
@@ -404,6 +469,11 @@ export const usePlayerStore = defineStore('player', () => {
 
     loading.value = true;
     error.value = '';
+    /*
+     * 清掉上一次的"实际档位"：解析要等网络，这段时间它属于上一首，
+     * 留着会让档位芯片与降级提示都停在上一次的结果上（明明是另一首歌）。
+     */
+    actualQuality.value = null;
     /*
      * 从这里到 src 设好之间，音频元素上还是上一首（解析地址要等网络）。
      * 它照旧在响、照旧发 timeupdate —— 那段时间的进度一律不算数。
@@ -441,6 +511,15 @@ export const usePlayerStore = defineStore('player', () => {
       element.volume = volume.value;
       element.muted = muted.value;
       trial.value = result.trial;
+      /*
+       * 记下实际拿到的档位：与用户选的不一致就说明平台降级了（这首歌没这档，或账号没权限）。
+       * 用户主动换档引起的那一次，还要当场说清楚原因，别让他以为"选了无损就在听无损"。
+       */
+      actualQuality.value = result.actualQuality ?? quality.value;
+      if (announceQualityGap) {
+        announceQualityGap = false;
+        if (actualQuality.value !== quality.value && qualityNotice.value) toast.info(qualityNotice.value);
+      }
 
       /*
        * 起播位置只认 pendingSeek（由调用方表达）：切歌一律 0，
@@ -617,6 +696,8 @@ export const usePlayerStore = defineStore('player', () => {
   function setQuality(next: Quality): void {
     quality.value = next;
     persist();
+    /* 用户主动换档：这一次若被降级，要明确告诉他为什么（自动切歌不弹，免得每首都弹一遍）。 */
+    announceQualityGap = true;
     /*
      * 换档位要重新取地址、重设 src，进度得自己留着：交给 pendingSeek 起播。
      * 原先的「播起来之后再 seek 回去」不稳 —— 那时 duration 常常还是 NaN，
@@ -745,6 +826,7 @@ export const usePlayerStore = defineStore('player', () => {
     duration.value = 0;
     lyric.value = { lrc: '', trans: '', roma: '' };
     trial.value = false;
+    actualQuality.value = null;
     stop();
   }
 
@@ -775,6 +857,10 @@ export const usePlayerStore = defineStore('player', () => {
     lyricLoading,
     expanded,
     trial,
+    /** 实际拿到的档位（可能与 `quality` 不同 = 被降级）。 */
+    actualQuality,
+    /** 降级原因（空串 = 没有降级），界面照它解释给用户。 */
+    qualityNotice,
     current,
     activeSource,
     progress,

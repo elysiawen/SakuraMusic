@@ -18,6 +18,7 @@ import type {
   PlaylistSummary,
   PlatformAlbum,
   PlatformArtist,
+  Quality,
   UnifiedTrack,
 } from './types';
 import { trackKey } from './types';
@@ -31,6 +32,14 @@ export const NETEASE_LEVELS: Record<string, string[]> = {
   high: ['exhigh', 'standard'],
   lossless: ['lossless', 'exhigh', 'standard'],
   hires: ['hires', 'lossless', 'exhigh', 'standard'],
+  /*
+   * 高级三档的 level 名见上游文档：jyeffect 高清臻音、jymaster 超清母带、sky 沉浸环绕声。
+   * 它们都要对应等级的会员，拿不到地址就逐级往下落到无损/Hi-Res —— 用户点了至少能听。
+   * 母带那条链里没有 `jyeffect`：高清臻音是另一种味道的档位，不是母带的降级，少试一次也少一次等待。
+   */
+  spatial: ['jyeffect', 'hires', 'lossless', 'exhigh', 'standard'],
+  master: ['jymaster', 'hires', 'lossless', 'exhigh', 'standard'],
+  surround: ['sky', 'hires', 'lossless', 'exhigh', 'standard'],
 };
 
 /** Set-Cookie 的属性名，不属于 Cookie 头内容。 */
@@ -106,7 +115,7 @@ function firstImage(...values: unknown[]): string | undefined {
   return url.startsWith('http://') ? `https://${url.slice('http://'.length)}` : url;
 }
 
-export function mapNeteaseSong(raw: unknown): UnifiedTrack | null {
+export function mapNeteaseSong(raw: unknown, privilege?: unknown): UnifiedTrack | null {
   const song = asObj(raw);
   const id = str(song.id);
   if (!id) return null;
@@ -118,6 +127,7 @@ export function mapNeteaseSong(raw: unknown): UnifiedTrack | null {
       platform: PLATFORM,
     }))
     .filter((item) => item.name);
+  const files = neteaseFileInfo(song, privilege);
   return {
     key: trackKey(PLATFORM, id),
     title: stripHtml(song.name),
@@ -131,7 +141,100 @@ export function mapNeteaseSong(raw: unknown): UnifiedTrack | null {
     durationMs: num(song.dt ?? song.duration),
     sources: [{ platform: PLATFORM, id }],
     vip: num(song.fee) === 1 || num(song.fee) === 4,
+    qualities: files?.qualities,
+    qualitySizes: files?.sizes,
+    /*
+     * 只有拿到 `privilege` 时这份档位清单才算完整：搜索、歌单的结果里没有它，
+     * 高级档就只能靠它判断（见 `neteaseFileInfo`）。前端会因此补一次详情。
+     */
+    qualitiesComplete: privilege !== undefined,
   };
+}
+
+/**
+ * 网易云"这一档比那一档高"的顺序，只用于判断 `privilege.maxBrLevel` 覆盖到哪几档。
+ *
+ * 名字来自上游文档（api-enhanced 的 `/song/url/v1`）：
+ * `jyeffect` 高清臻音、`jymaster` 超清母带、`sky` 沉浸环绕声（另有 `vivid` 臻音全景声、
+ * `dolby` 杜比全景声 —— 我们没对外开这两档，故不列）。
+ *
+ * `sky` 不在表里：空间音效是另一条线，有它不代表有母带（反之亦然），所以单独判等。
+ */
+const NETEASE_LEVEL_RANK: Record<string, number> = {
+  standard: 0,
+  higher: 1,
+  exhigh: 2,
+  lossless: 3,
+  hires: 4,
+  jyeffect: 5,
+  jymaster: 6,
+};
+
+/**
+ * 这首歌有哪些音质档位、各档多大。
+ *
+ * 基础四档看 `l / m / h / sq / hr`（**值为 null 就是没有**，对象里带 `size` 字节）：
+ * `l`(128k) → 标准、`h`(320k) → 极高、`sq` → 无损、`hr` → Hi-Res；`m`(192k) 我们对外没这一档，忽略。
+ *
+ * 高级三档（高清臻音 / 超清母带 / 沉浸环绕声）**没有体积字段**，只能从详情的
+ * `privilege.maxBrLevel`（"这首歌最高能到哪一档"）推：这几档是逐级累积的，一首有母带的歌
+ * 同时有高清臻音、Hi-Res、无损，所以拿 `maxBrLevel` 的名次比大小。
+ * 实测热门歌里大半 `maxBrLevel` 就是 `jymaster`，而它们的 `hr` 字段常常是空的 ——
+ * 只看 `sq/hr` 的话，明明有母带的歌会被显示成"只有三档"。
+ *
+ * `privilege` 只有单曲详情给（搜索与歌单都没有），缺它时这里只报基础档，
+ * 由 `qualitiesComplete: false` 告诉前端"清单不全，去补一次详情"。
+ *
+ * 一份都没有时返回 `undefined` 表示"不知道"，而不是"没有"。
+ */
+function neteaseFileInfo(
+  song: Record<string, unknown>,
+  privilege?: unknown,
+): { qualities: Quality[]; sizes: Partial<Record<Quality, number>> } | undefined {
+  const pairs: Array<[Quality, unknown]> = [
+    ['standard', song.l],
+    ['high', song.h],
+    ['lossless', song.sq],
+    ['hires', song.hr],
+  ];
+  const qualities: Quality[] = [];
+  const sizes: Partial<Record<Quality, number>> = {};
+  for (const [quality, value] of pairs) {
+    const info = asObj(value);
+    if (Object.keys(info).length === 0) continue;
+    qualities.push(quality);
+    const size = num(info.size);
+    if (size > 0) sizes[quality] = size;
+  }
+
+  const maxLevel = str(asObj(privilege).maxBrLevel);
+  if (maxLevel === 'sky') {
+    qualities.push('surround');
+  } else {
+    const maxRank = NETEASE_LEVEL_RANK[maxLevel];
+    if (maxRank !== undefined) {
+      if (maxRank >= NETEASE_LEVEL_RANK.jyeffect) qualities.push('spatial');
+      if (maxRank >= NETEASE_LEVEL_RANK.jymaster) qualities.push('master');
+    }
+  }
+
+  return qualities.length > 0 ? { qualities, sizes } : undefined;
+}
+
+/** 取地址时用的 level 名反查回档位（回报"实际拿到哪档"）。 */
+export function neteaseQualityOfLevel(level: string): Quality | undefined {
+  const mapping: Record<string, Quality> = {
+    standard: 'standard',
+    // 上游偶尔会给到 192k（`higher`）：我们对外没有这一档，归到"高品质"这一栏（它确实不是无损）。
+    higher: 'high',
+    exhigh: 'high',
+    lossless: 'lossless',
+    hires: 'hires',
+    jyeffect: 'spatial',
+    jymaster: 'master',
+    sky: 'surround',
+  };
+  return mapping[level];
 }
 
 export function mapNeteaseArtist(raw: unknown): PlatformArtist | null {
@@ -230,7 +333,7 @@ export async function searchTracks(
 ): Promise<UnifiedTrack[]> {
   const result = await searchResult(keyword, SEARCH_TYPES.song, page, limit, cookie);
   return asArr(result.songs)
-    .map(mapNeteaseSong)
+    .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
 }
 
@@ -271,7 +374,9 @@ export async function searchPlaylists(
 export async function trackDetail(id: string, cookie: string | null): Promise<UnifiedTrack | null> {
   const body = unwrap(await upstreamJson<RawResponse>('/song/detail', { cookie, query: { ids: id } }));
   const songs = asArr(body.songs);
-  return songs.length > 0 ? mapNeteaseSong(songs[0]) : null;
+  // 详情是**唯一**能拿到 `privilege.maxBrLevel` 的地方（搜索、歌单都没有），高级档就靠它判断。
+  const privileges = asArr(body.privileges);
+  return songs.length > 0 ? mapNeteaseSong(songs[0], privileges[0]) : null;
 }
 
 export interface ResolvedAudio {
@@ -304,9 +409,20 @@ export async function resolveAudioUrl(
       const url = str(item.url);
       if (!url) continue;
 
+      /*
+       * 回报**上游实际给的**档位（`item.level`），不是我们请求的那个。
+       *
+       * 网易云拿不到某一档时不报错，而是"按能给的给"，并在这个字段里如实写实际档位 ——
+       * 实测：请求 `sky`（沉浸环绕声）回来 `jyeffect`（高清臻音）、请求 `jymaster` 回来 `jyeffect`、
+       * 请求 `hires` 回来 `lossless`。照请求值回报，界面就会把"正在听高清臻音"说成"沉浸环绕声"，
+       * 芯片显示的档位与实际在听的对不上（用户点了沉浸环绕声，芯片却一直挂着它）。
+       *
+       * 拿到实际档位后**不必再往下试**：上游只会往低给，再试只会更低。`item.level` 缺失时才退回请求值。
+       */
+      const served = str(item.level) || level;
       const isTrial = Boolean(item.freeTrialInfo) && item.freeTrialInfo !== 'null';
-      if (!isTrial) return { url, level, trial: false };
-      if (!trialFallback) trialFallback = { url, level, trial: true };
+      if (!isTrial) return { url, level: served, trial: false };
+      if (!trialFallback) trialFallback = { url, level: served, trial: true };
     } catch {
       // 单档位失败不影响后续降级尝试。
     }
@@ -368,7 +484,7 @@ export async function playlistTracks(
     await upstreamJson<RawResponse>('/playlist/track/all', { cookie, query: { id, limit, offset } }),
   );
   return asArr(body.songs)
-    .map(mapNeteaseSong)
+    .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
 }
 
@@ -401,7 +517,7 @@ export async function artistBundle(id: string, cookie: string | null): Promise<A
       name: '未知歌手',
     },
     items: asArr(songs.hotSongs)
-      .map(mapNeteaseSong)
+      .map((song) => mapNeteaseSong(song))
       .filter((item): item is UnifiedTrack => item !== null),
     albums: asArr(albums.hotAlbums)
       .map(mapNeteaseAlbum)
@@ -420,7 +536,7 @@ export async function albumBundle(id: string, cookie: string | null): Promise<Al
   return {
     album: mapNeteaseAlbum(body.album) ?? { platform: PLATFORM, id, name: '未知专辑', artists: [] },
     items: asArr(body.songs)
-      .map(mapNeteaseSong)
+      .map((song) => mapNeteaseSong(song))
       .filter((item): item is UnifiedTrack => item !== null),
   };
 }
@@ -429,7 +545,7 @@ export async function albumBundle(id: string, cookie: string | null): Promise<Al
 export async function recommendSongs(cookie: string | null): Promise<UnifiedTrack[]> {
   const body = unwrap(await upstreamJson<RawResponse>('/recommend/songs', { cookie }));
   return asArr(asObj(body.data).dailySongs)
-    .map(mapNeteaseSong)
+    .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
 }
 
@@ -437,7 +553,7 @@ export async function recommendSongs(cookie: string | null): Promise<UnifiedTrac
 export async function personalFm(cookie: string | null): Promise<UnifiedTrack[]> {
   const body = unwrap(await upstreamJson<RawResponse>('/personal_fm', { cookie }));
   return asArr(body.data)
-    .map(mapNeteaseSong)
+    .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
 }
 
@@ -539,6 +655,6 @@ export async function songsByIds(ids: string[], cookie: string | null): Promise<
     await upstreamJson<RawResponse>('/song/detail', { cookie, query: { ids: ids.join(',') } }),
   );
   return asArr(asObj(body).songs)
-    .map(mapNeteaseSong)
+    .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
 }

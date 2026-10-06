@@ -32,6 +32,20 @@ export interface TrackSource {
  * 跨平台统一歌曲模型。
  * 不同平台对同一首歌的 `sources` 会合并到同一个条目里，前端据此实现“手动切源”。
  */
+/** 音质档位。前端的 `Quality` 与之一一对应，两处要一起改。 */
+/**
+ * 音质档位（两个平台的并集，各家只有其中几档）。
+ *
+ *   standard / high / lossless  标准 / 极高 / 无损，两边都有；
+ *   hires                       Hi-Res，**只有网易云有**（QQ 的最高档直接是母带）；
+ *   spatial / master / surround 高清臻音 / 超清母带 / 沉浸环绕声，两边都有但叫法不同：
+ *                               QQ 是 ATMOS_2(臻品音质) / MASTER(臻品母带) / ATMOS_51(臻品全景声 5.1)，
+ *                               网易云是 jyeffect / jymaster / sky。
+ *
+ * 这几档都要对应等级的会员，等级不够时上游不给地址 —— 各平台的降级链会落到能播的档位。
+ */
+export type Quality = 'standard' | 'high' | 'lossless' | 'hires' | 'spatial' | 'master' | 'surround';
+
 export interface UnifiedTrack {
   /** 主标识，形如 `netease:123456`。 */
   key: string;
@@ -49,6 +63,32 @@ export interface UnifiedTrack {
   sources: TrackSource[];
   /** 是否为付费/会员专享资源。 */
   vip?: boolean;
+  /**
+   * 这首歌**本身存在**哪些音质档位（低→高排列）。
+   *
+   * 缺省表示未知（本地曲目，或这次平台没给这份数据）——此时界面上不要做任何置灰，
+   * 「不知道」和「没有」必须分得开。
+   *
+   * 它只回答"平台有没有这份文件"，不回答"你的账号能不能听"：会员/版权受限是另一回事
+   * （同一首歌四档文件都在、却四档都无权限，很常见）。
+   */
+  qualities?: Quality[];
+  /**
+   * `qualities` 是不是**完整**的。
+   *
+   * QQ 曲目的 `file` 里各档体积齐全，映射时就是完整的；网易云的搜索结果与歌单只带
+   * `l / h / sq / hr` 这几个基础档，高级档要单曲详情里的 `privilege.maxBrLevel` 才知道 ——
+   * 那种情况这里是 false，前端播放时会补一次详情（`player` store 的 `enrichMetadata`）。
+   * 不补的话，明明有母带的歌，音质面板只会列出三档。
+   */
+  qualitiesComplete?: boolean;
+  /**
+   * 各档的文件大小（字节），来源与 `qualities` 同一处。
+   *
+   * QQ 音乐客户端在音质面板里逐档标了体积（"11.9M 最高320kbps"），我们照它显示，
+   * 所以这份数据要一起带出来。缺省同样表示"不知道"，不是 0 字节。
+   */
+  qualitySizes?: Partial<Record<Quality, number>>;
 }
 
 /** 某个歌手/专辑在单个平台上的坐标，用于渲染可跳转的平台徽标。 */

@@ -228,7 +228,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
           <div class="lyric-tags">
             <SourcePicker align="left" />
-            <QualityPicker align="left" />
+            <!-- 芯片在这一行的左端、下面还有大片空间，所以面板向下弹（向上弹会顶出屏幕被裁掉）。 -->
+            <QualityPicker align="left" placement="down" />
             <span v-if="player.trial" class="tag" style="color: var(--brand-600)">试听</span>
 
             <!-- 播放链路：直连时音频不经过服务器，中转时字节由网关转发 -->

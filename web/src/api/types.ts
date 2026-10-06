@@ -29,6 +29,29 @@ export interface UnifiedTrack {
   durationMs: number;
   sources: TrackSource[];
   vip?: boolean;
+  /**
+   * 这首歌**本身存在**哪些音质档位（低→高）。
+   *
+   * 缺省 = 不知道（本地曲目，或平台这次没给这份数据）——此时**不要**置灰任何档位，
+   * 「不知道」和「没有」必须分得开。
+   *
+   * 它只回答"平台有没有这份文件"，不回答"你的账号能不能听"：会员/版权受限是另一回事
+   * （同一首歌四档文件都在、却四档都没权限，很常见）。
+   */
+  qualities?: Quality[];
+  /**
+   * 各档的文件大小（字节），与 `qualities` 同源。
+   * QQ 音乐客户端的音质面板逐档标了体积，我们照它显示。缺省 = 不知道，不是 0 字节。
+   */
+  qualitySizes?: Partial<Record<Quality, number>>;
+  /**
+   * `qualities` 是不是完整的。
+   *
+   * QQ 曲目一拿到就是完整的；网易云的搜索结果与歌单只带基础档，高级档要单曲详情里的
+   * `privilege.maxBrLevel` 才知道，那时这里是 false —— 播放时会补一次详情（见 player store）。
+   * 缺省当作"不完整"，宁可多补一次，也不要少显示几档。
+   */
+  qualitiesComplete?: boolean;
   /** 播放历史条目会带上播放时间。 */
   playedAt?: string;
 }
@@ -253,7 +276,22 @@ export interface PlatformImportResult {
   truncated: boolean;
 }
 
-export type Quality = 'standard' | 'high' | 'lossless' | 'hires';
+/**
+ * 音质档位（两个平台的并集，各家只有其中几档）。
+ *
+ *   standard / high / lossless  标准 / 极高 / 无损，两边都有；
+ *   hires                       Hi-Res，**只有网易云有**（QQ 的最高档直接是母带）；
+ *   spatial / master / surround 高清臻音 / 超清母带 / 沉浸环绕声，两边都有、名字也一致，
+ *                               但都要对应等级的会员，等级不够时上游不给地址、自动降级。
+ */
+export type Quality =
+  | 'standard'
+  | 'high'
+  | 'lossless'
+  | 'hires'
+  | 'spatial'
+  | 'master'
+  | 'surround';
 
 /** 直连播放所需的地址与请求头（由平台 CDN 的防盗链要求决定）。 */
 export interface DirectStream {
@@ -269,6 +307,11 @@ export interface PlayResolveResult {
   /** 网关代理地址（相对路径），字节经服务器转发。 */
   url: string;
   quality: Quality;
+  /**
+   * 实际拿到的档位。与 `quality` 不同就说明平台降级了 —— 界面要据此把原因说清楚，
+   * 否则用户会以为"选了无损就在听无损"。
+   */
+  actualQuality?: Quality;
   trial: boolean;
   /** 直连地址：客户端自己向 CDN 取流，服务器不占音频带宽。 */
   direct?: DirectStream;
@@ -284,9 +327,57 @@ export const PLATFORM_COLOR: Record<Platform, string> = {
   qq: '#31c27c',
 };
 
+/**
+ * 音质档位的通用叫法。
+ *
+ * `high` 用「极高」而不是「高品」：这是 QQ 音乐与网易云客户端都在用的名字，
+ * 统一它就省得出现「设置里叫极高、播放条面板里叫高品」这种同一档两个名。
+ */
 export const QUALITY_LABEL: Record<Quality, string> = {
   standard: '标准',
-  high: '高品',
+  high: '极高',
   lossless: '无损',
   hires: 'Hi-Res',
+  spatial: '高清臻音',
+  master: '超清母带',
+  surround: '沉浸环绕声',
 };
+
+/*
+ * QQ 音乐客户端的叫法，两张表成对出现：
+ *   `MENU` 是音质面板里那一行的完整写法（带英文名/代号），`SHORT` 是芯片那种紧凑处的短名 ——
+ *   客户端自己也是这么分的：面板写「超清母带 (Master)」，播放条那颗芯片只写「标准」。
+ */
+const QQ_QUALITY_MENU: Partial<Record<Quality, string>> = {
+  high: '极高 (HQ)',
+  lossless: '无损 (SQ)',
+  spatial: '高清臻音 (Spatial Audio)',
+  master: '超清母带 (Master)',
+  surround: '沉浸环绕声 (Surround Audio)',
+};
+
+const QQ_QUALITY_SHORT: Partial<Record<Quality, string>> = {
+  high: '极高',
+  lossless: '无损',
+  spatial: '高清臻音',
+  master: '超清母带',
+  surround: '沉浸环绕声',
+};
+
+/** 需要"对应等级会员"的高级档。降级提示与面板底部说明都要区别对待它们。 */
+export const PREMIUM_QUALITIES: Quality[] = ['hires', 'spatial', 'master', 'surround'];
+
+/** 音质面板里用的完整档位名（不给平台就用通用叫法）。 */
+export function qualityMenuLabel(quality: Quality, platform?: Platform): string {
+  if (platform === 'qq') return QQ_QUALITY_MENU[quality] ?? QUALITY_LABEL[quality];
+  return QUALITY_LABEL[quality];
+}
+
+/**
+ * 紧凑处用的档位名：播放条那颗芯片、以及「这首歌没有「…」」这类提示语。
+ * 芯片必须用短名，否则会被「高清臻音 (Spatial Audio)」这种完整名撑开。
+ */
+export function qualityLabel(quality: Quality, platform?: Platform): string {
+  if (platform === 'qq') return QQ_QUALITY_SHORT[quality] ?? QUALITY_LABEL[quality];
+  return QUALITY_LABEL[quality];
+}
