@@ -462,7 +462,7 @@ export async function toplistTracks(
   page: number,
   limit: number,
   cookie: string | null,
-): Promise<{ title: string; cover?: string; items: UnifiedTrack[] }> {
+): Promise<{ title: string; cover?: string; description?: string; items: UnifiedTrack[] }> {
   const data = asObj(
     unwrap(
       await upstreamJson<RawResponse>(BASE, `/top/${encodeURIComponent(id)}/detail`, {
@@ -477,6 +477,9 @@ export async function toplistTracks(
     title: firstStr(info.name, info.title),
     // 同上：榜单详情里的封面色也是 snake_case。
     cover: str(info.front_pic_url) || undefined,
+    // 榜单简介在 `info.intro`（SDK 的 `TopSummary.intro`），取法与分类列表里的卡片一致。
+    // 榜单的 intro 里带 `<br>` 之类标签（歌单的 desc 是纯文本），详情页直接渲染会露出标签，先去一遍。
+    description: stripHtml(firstStr(info.intro, info.title_sub)) || undefined,
     items: mapQqSongs(data.songs),
   };
 }
@@ -526,7 +529,7 @@ export async function songlistTracks(
   page: number,
   limit: number,
   cookie: string | null,
-): Promise<{ title: string; cover?: string; total: number; items: UnifiedTrack[] }> {
+): Promise<{ title: string; cover?: string; description?: string; total: number; items: UnifiedTrack[] }> {
   const data = asObj(
     unwrap(
       await upstreamJson<RawResponse>(BASE, `/songlist/${encodeURIComponent(id)}/detail`, {
@@ -540,6 +543,8 @@ export async function songlistTracks(
   return {
     title: firstStr(info.title, info.name),
     cover: str(info.picurl) || undefined,
+    // 歌单简介在 `info.desc`（SDK 的 `SongList.desc`），与网易云 `description` 对齐后详情页才有得渲染。
+    description: str(info.desc) || undefined,
     total: num(data.total),
     items: mapQqSongs(data.songs),
   };

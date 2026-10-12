@@ -376,6 +376,7 @@ export async function loadCollection(
     id,
     title: detail.title,
     cover: detail.cover,
+    description: detail.description,
     trackCount: detail.total,
     items: detail.items,
   };
@@ -402,6 +403,7 @@ export async function loadToplist(
       id,
       title: detail.title || '排行榜',
       cover: detail.cover,
+      description: detail.description,
       items: detail.items,
       trackCount: detail.items.length,
     };
