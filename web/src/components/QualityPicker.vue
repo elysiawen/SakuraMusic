@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { PREMIUM_QUALITIES, qualityLabel, qualityMenuLabel, type Quality } from '@/api/types';
 import { usePlayerStore } from '@/stores/player';
+import { resolveMenuDirection } from '@/utils/menuPlacement';
 import AppIcon from './AppIcon.vue';
 
 /**
@@ -56,11 +57,8 @@ function placeMenu(): void {
   const width = Math.min(246, vw - margin * 2);
   const below = vh - margin - (rect.bottom + gap);
   const above = rect.top - gap - margin;
-  const preferDown = props.placement === 'down';
-  const primary = preferDown ? below : above;
-  const secondary = preferDown ? above : below;
-  // 首选那侧放得下就用它；放不下（短屏常见）翻到更宽敞的一侧。
-  const down = primary >= 160 || primary >= secondary;
+  // 方向判定是纯规则，见 utils/menuPlacement：那里解释了为什么不能直接把"上方空间够"当成"往下弹"。
+  const down = resolveMenuDirection({ above, below }, props.placement === 'down') === 'down';
 
   let left = props.align === 'left' ? rect.left : rect.right - width;
   left = Math.max(margin, Math.min(left, vw - margin - width));

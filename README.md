@@ -7,6 +7,7 @@
 - 前端：Vue 3 + Vite + TypeScript + Pinia；网关：Node.js + Fastify + TypeScript。
 - 要开发其它客户端（桌面端 / 移动端 / 第三方前端）？接口清单见下文 **[主要接口](#主要接口)**，完整实现以 `gateway/src/routes/` 为准。
 
+
 ---
 
 ## 架构

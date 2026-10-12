@@ -66,10 +66,16 @@ const unboundPlatforms = computed<Platform[]>(() =>
 
     <template v-if="library.playlists.length > 0">
       <div class="nav-group-title">我的歌单</div>
-      <!-- 窄屏会被 main.css 隐藏：横向导航条塞不下歌单，入口在「我的音乐」页 -->
+      <!--
+        窄屏会被 main.css 隐藏：横向导航条塞不下歌单，入口在「我的音乐」页。
+        桌面端这里是侧栏里唯一滚动的一块（见 main.css 的 .sidebar-playlists）：
+        歌单再多也只让这一段滚，品牌、导航与版权文字都不会被推走 ——
+        所以这里**不截断**：以前只放前 12 个（那时整条侧栏一起滚，放全了会把导航顶出去），
+        现在滚动收在列表内部，列表有多长就放多长。
+      -->
       <nav class="stack sidebar-playlists" style="gap: 2px">
         <RouterLink
-          v-for="playlist in library.playlists.slice(0, 12)"
+          v-for="playlist in library.playlists"
           :key="playlist.id"
           class="nav-item"
           :class="{ 'is-active': $route.name === 'playlist' && $route.params.id === playlist.id }"

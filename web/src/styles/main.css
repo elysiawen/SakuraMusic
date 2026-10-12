@@ -724,6 +724,24 @@ textarea {
   text-transform: uppercase;
 }
 
+/*
+ * 我的歌单是侧栏里**唯一**会滚动的一块。
+ *
+ * 侧栏自己保留 overflow-y: auto 作为兜底（窗口极矮、连固定内容都放不下时仍然滚得动），
+ * 但正常情况轮到的是这里：它 flex-grow 吃掉剩余高度、超出就在自己内部滚，
+ * 于是品牌、主导航、分组标题和版权文字都不会被推着走。
+ *
+ * min-height 是「再挤也要留几行」的下限：只靠 flex-shrink 的话，矮窗口会把它压成 0 高，
+ * 歌单就整个看不见、也点不到了。
+ */
+.sidebar-playlists {
+  flex: 1 1 auto;
+  min-height: 96px;
+  overflow-y: auto;
+  /* 滚到底不再带动外层侧栏：否则列表到头之后整个侧栏跟着动，像点错了地方。 */
+  overscroll-behavior: contain;
+}
+
 .nav-item {
   display: flex;
   align-items: center;
