@@ -219,7 +219,7 @@ onBeforeUnmount(() => {
 <template>
   <!--
     Teleport 到 body：账户页里这个弹窗长在路由组件内部，而路由组件带着 transform 动画（fade-in），
-    祖先一旦有 transform 就成了 fixed 的包含块 —— 遮罩只会盖住内容区，盖不到侧栏与播放条（同 CreatePlaylistDialog）。
+    祖先一旦有 transform 就成了 fixed 的包含块 —— 遮罩只会盖住内容区，盖不到侧栏与播放条（同 PlaylistDialog）。
   -->
   <Teleport to="body">
     <div v-if="platform" class="modal-mask" @click.self="close()">

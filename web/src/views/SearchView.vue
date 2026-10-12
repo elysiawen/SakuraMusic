@@ -19,7 +19,7 @@ import { PLATFORM_LABEL, type Platform, type Playlist, type SearchType } from '@
 import AlbumCard from '@/components/AlbumCard.vue';
 import AppIcon from '@/components/AppIcon.vue';
 import ArtistCard from '@/components/ArtistCard.vue';
-import CreatePlaylistDialog from '@/components/CreatePlaylistDialog.vue';
+import PlaylistDialog from '@/components/PlaylistDialog.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import PlaylistCard from '@/components/PlaylistCard.vue';
 import TrackList from '@/components/TrackList.vue';
@@ -311,7 +311,7 @@ async function onPlaylistCreated(playlist: Playlist): Promise<void> {
       </div>
     </EmptyState>
 
-    <CreatePlaylistDialog
+    <PlaylistDialog
       :visible="createOpen"
       :default-name="result ? `${result.keyword} 的搜索结果` : ''"
       :hint="`将把当前页的前 ${Math.min(50, currentCount)} 首一起存入这个歌单。`"

@@ -414,6 +414,42 @@ textarea {
   }
 }
 
+/*
+ * 多行输入框（描述这类长短差别很大的文本）。
+ *
+ * 与 `.input` 同一套观感，只改两处：
+ *   - 圆角收成普通圆角：`.input` 的 999px 胶囊用在多行上会变成一颗橄榄球；
+ *   - 允许纵向拉伸并给个最小高度，内容多时用户自己拉高，不用在小框里挤着看。
+ */
+.textarea {
+  width: 100%;
+  padding: 11px 15px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  outline: none;
+  font: inherit;
+  color: inherit;
+  line-height: 1.65;
+  /* 通用下限：至少能看见几行内容。每处按用途用 `rows` 调（比如歌单描述现在给 7 行）。 */
+  min-height: 118px;
+  resize: vertical;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.textarea:focus {
+  border-color: var(--brand-300);
+  box-shadow: 0 0 0 4px rgba(var(--brand-rgb), 0.16);
+}
+
+@media (pointer: coarse) {
+  .textarea {
+    font-size: 16px;
+  }
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

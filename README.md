@@ -404,6 +404,30 @@ Nginx 托管 `web/dist` 时**不用拷文件、不用重启 Nginx、不用重启
 所以**表结构不需要手工迁移**：`git pull && pnpm install && pnpm build` 之后启动即可；
 也可以先显式跑一次 `pnpm db:init`（生产只装了生产依赖、没有 `tsx` 时用 `node gateway/dist/db/init.js`）。
 
+**Python 那一侧不跟着 `pnpm install` 走。** QQ 上游的 SDK 钉在 `qq-upstream/requirements.txt` 里，
+那个文件改了就必须重装虚拟环境里的包，并**重启 QQ 上游**（进程里 import 的是启动那一刻的代码，
+装包不会影响已经在跑的进程 —— 只重装不重启，`/health` 会照旧报旧版本）：
+
+```bash
+# Linux / macOS
+.runtime/qq-upstream-venv/bin/python -m pip install -r qq-upstream/requirements.txt
+# Windows（PowerShell）
+.runtime\qq-upstream-venv\Scripts\python.exe -m pip install -r qq-upstream\requirements.txt
+```
+
+也可以让 bootstrap 代劳：`pnpm bootstrap --no-pull`（幂等：已有 `gateway/.env` 会保持原样，
+`CREDENTIAL_KEY` 不会被重写，虚拟环境与设备档案都保留，**不需要重新扫码**）。
+
+装完重启 QQ 上游（Supervisor 点重启、`systemctl restart`、或前台 `pnpm start:prod` 的 Ctrl+C 再拉），
+然后确认版本真的换过来了：
+
+```bash
+curl -s http://127.0.0.1:8080/health     # 会直接报出实际加载的 SDK 版本与路径
+```
+
+回退同理：把 `requirements.txt` 的 pin 改回去（或 `pip install qqmusic-api-python==<旧版本>`）再重启，
+不涉及数据库与凭据。
+
 需要手动补的只有一处**数据**：老版本的本地库只存歌手名与专辑名、没存它们的 ID，于是歌单 / 收藏 /
 播放历史里的曲目点不进歌手页与专辑页。新版本写入的数据自带这些字段，**上线前已有的那些行**跑一次回填即可：
 
@@ -461,7 +485,7 @@ ls -ld /tmp                                        # 正常应为 drwxrwxrwt
 根治办法是**始终用同一个用户**跑上游，别 root / www 混用（`/tmp` 被系统定期清理后也会自动重建，不影响使用）。
 
 **QQ 音乐上游起不来 / 报 `No module named 'qqmusic_api'`**
-自建上游要一个装了 `qqmusic-api-python==0.7.3` 的解释器：先跑一次 `node scripts/bootstrap.mjs`
+自建上游要一个装了 `qqmusic-api-python==0.8.2` 的解释器：先跑一次 `node scripts/bootstrap.mjs`
 （会创建 `.runtime/qq-upstream-venv` 并装好依赖），或手动指定解释器：
 `QQ_UPSTREAM_PYTHON=/path/to/python pnpm start:qq`。
 

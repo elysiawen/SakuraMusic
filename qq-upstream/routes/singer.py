@@ -1,7 +1,7 @@
 """歌手路由：信息 / 歌曲 / 专辑（对齐原 web 层 `routes/singer.py` 的三条）。
 
-注意 0.7.3 里「专辑」那条的方法名是 `get_album_list`（单数 album），
-不是 `get_albums_list` —— 照着旧版本抄很容易写错。
+注意「专辑」那条的方法名是 `get_album_list`（单数 album），不是 `get_albums_list` ——
+照着别处抄很容易写错。0.8.2 起这两条多了个 `order` 参数（默认按热度），我们没传，走默认排序。
 """
 
 from __future__ import annotations

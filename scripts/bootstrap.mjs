@@ -192,7 +192,7 @@ function prepareQqEnvironment() {
   if (!existsSync(venvPython)) {
     info('创建 QQ 上游虚拟环境（python -m venv .runtime/qq-upstream-venv）…');
     if (!run(python, ['-m', 'venv', QQ_VENV], root)) {
-      warn('虚拟环境创建失败，QQ 音乐上游将退回使用系统 python（需自带 qqmusic-api-python==0.7.3）');
+      warn('虚拟环境创建失败，QQ 音乐上游将退回使用系统 python（需自带 qqmusic-api-python==0.8.2）');
       return;
     }
   }

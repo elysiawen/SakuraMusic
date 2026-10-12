@@ -44,7 +44,7 @@ if (!existsSync(entry)) {
 if (!fromEnv && !fromVenv) {
   console.warn(
     '[sakura] 未找到 .runtime/qq-upstream-venv，将使用 PATH 上的 python —— ' +
-      '请确认它装了 qqmusic-api-python==0.7.3（`node scripts/bootstrap.mjs` 可一键准备）。',
+      '请确认它装了 qqmusic-api-python==0.8.2（`node scripts/bootstrap.mjs` 可一键准备）。',
   );
 }
 

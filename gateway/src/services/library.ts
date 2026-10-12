@@ -156,6 +156,14 @@ function trackColumns(track: UnifiedTrack): unknown[] {
 
 /* ------------------------------ 歌单 ------------------------------ */
 
+/**
+ * 歌单描述的长度上限。
+ *
+ * 与前端输入框的 `maxlength` 对齐（歌单弹窗里的描述文本域）——
+ * 两边不一致的话，界面能填进去的内容会被服务端悄悄截掉。
+ */
+const PLAYLIST_DESCRIPTION_MAX = 800;
+
 export interface PlaylistRow {
   id: string;
   name: string;
@@ -217,7 +225,7 @@ export async function createPlaylist(
   if (!name || name.length > 60) throw badRequest('歌单名称需为 1-60 位字符');
   const row = await one<{ id: string }>(
     `insert into playlists (user_id, name, description) values ($1, $2, $3) returning id`,
-    [userId, name, String(input.description ?? '').slice(0, 300)],
+    [userId, name, String(input.description ?? '').slice(0, PLAYLIST_DESCRIPTION_MAX)],
   );
   if (!row) throw badRequest('创建歌单失败');
   const items = await listPlaylists(userId);
@@ -240,7 +248,14 @@ export async function updatePlaylist(
             description = coalesce($4, description),
             updated_at = now()
       where id = $1 and user_id = $2`,
-    [playlistId, userId, name, input.description === undefined ? null : String(input.description).slice(0, 300)],
+    [
+      playlistId,
+      userId,
+      name,
+      input.description === undefined
+        ? null
+        : String(input.description).slice(0, PLAYLIST_DESCRIPTION_MAX),
+    ],
   );
 }
 

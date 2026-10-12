@@ -64,7 +64,7 @@ def credential_from_cookie(header: str) -> Credential | None:
 
     判据与原 web 层一致（`QQMusicApi/web/src/core/auth.py`：两者必须同时存在）。
 
-    键名按模型元数据取别名，而不是硬编码一套字段名 —— 0.7.3 里 `encrypt_uin` 只认
+    键名按模型元数据取别名，而不是硬编码一套字段名 —— SDK 里 `encrypt_uin` 只认
     `encryptUin`，而 `musicid`／`musickey` 又只有朴素字段名，混着手写很容易踩空。
     """
     fields = parse_cookie(header)

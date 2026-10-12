@@ -53,9 +53,18 @@ export const useLibraryStore = defineStore('library', () => {
     return result.playlist;
   }
 
-  async function renamePlaylist(id: string, name: string): Promise<void> {
-    await libraryApi.updatePlaylist(id, { name });
-    playlists.value = playlists.value.map((item) => (item.id === id ? { ...item, name } : item));
+  /*
+   * 改歌单的名称与/或描述。
+   *
+   * 两个字段走的是同一条 PATCH，所以合并成一个入口 —— 拆成两个函数的话，
+   * 「一次同时改名称和描述」会变成两次请求，中途还可能只生效一半。
+   */
+  async function updatePlaylist(
+    id: string,
+    input: { name?: string; description?: string },
+  ): Promise<void> {
+    await libraryApi.updatePlaylist(id, input);
+    playlists.value = playlists.value.map((item) => (item.id === id ? { ...item, ...input } : item));
   }
 
   async function deletePlaylist(id: string): Promise<void> {
@@ -105,7 +114,7 @@ export const useLibraryStore = defineStore('library', () => {
     loadAll,
     toggleFavorite,
     createPlaylist,
-    renamePlaylist,
+    updatePlaylist,
     deletePlaylist,
     addToPlaylist,
     removeFromPlaylist,

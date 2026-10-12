@@ -11,7 +11,7 @@ import {
 } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
-import CreatePlaylistDialog from '@/components/CreatePlaylistDialog.vue';
+import PlaylistDialog from '@/components/PlaylistDialog.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import LoadingState from '@/components/LoadingState.vue';
 import TrackList from '@/components/TrackList.vue';
@@ -391,7 +391,7 @@ async function removePlaylist(id: string, name: string): Promise<void> {
       </p>
     </template>
 
-    <CreatePlaylistDialog :visible="createOpen" @close="createOpen = false" @created="onCreated" />
+    <PlaylistDialog :visible="createOpen" @close="createOpen = false" @created="onCreated" />
   </div>
 </template>
 

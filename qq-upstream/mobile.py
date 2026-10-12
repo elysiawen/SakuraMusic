@@ -7,8 +7,8 @@
 但它自己把阻塞操作交给了线程（`anyio.to_thread`），因此在 FastAPI 的事件循环里跑不会卡住别的请求。
 
 **移动端只有一条路可走**：`LoginApi.checking_mobile_qrcode()`（内部建 MQTT 连接、
-订阅 `management.qrcode_login/<id>`）。0.7.3 的 `check_qrcode()` 里**没有 MOBILE 分支**
-（只有 wx / qq），把移动端二维码交给它，等于拿二维码标识去查 ptqrlogin 的接口 ——
+订阅 `management.qrcode_login/<id>`）。SDK 的 `check_qrcode()` 里**没有 MOBILE 分支**
+（只有 wx / qq；0.7.3 与 0.8.2 都一样），把移动端二维码交给它，等于拿二维码标识去查 ptqrlogin 的接口 ——
 只会空转到超时：App 那边扫了也不会有人知道，因为移动端状态是走 MQTT 推的。
 这一点与 dev 分支不同，别照抄那边的 `QRCodeLoginSession`。
 

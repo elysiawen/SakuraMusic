@@ -162,10 +162,7 @@ export async function pollBind(
     return {
       platform,
       status: 'error',
-      message:
-        type === 'wx'
-          ? '微信登录拿到的凭据不被 QQ 承认，刷新也没能换到可用的（这条扫码方式目前用不了），请改用「手机 QQ 扫码」或「QQ音乐扫码」'
-          : '登录成功但凭据不可用（QQ 返回未登录），请重新扫码',
+      message: '登录成功但凭据不可用（QQ 返回未登录），刷新也没能换到可用的，请重新扫码',
     };
   }
 

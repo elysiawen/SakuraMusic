@@ -4,10 +4,11 @@
 # codec on Windows (cp936/GBK here), and a non-ASCII comment crashes it with
 # UnicodeDecodeError before it even starts resolving packages.
 #
-# The SDK version is pinned on purpose: the local QQMusicApi checkout sits on a
-# dev branch (v0.7.3-36, with a breaking web refactor and a rewritten request
-# core) and does not behave like the released build. The release is the one
-# that has actually been verified to work.
-qqmusic-api-python==0.7.3
+# The SDK version is pinned on purpose (exact, no range): between 0.7.3 and 0.8.x
+# the upstream library rewrote its request kernel, migrated every module endpoint
+# to a declarative form (methods now return awaitable request descriptors) and
+# bumped the Android protocol. The gateway-facing field names are verified against
+# the exact release, so bump this deliberately and smoke-test after doing so.
+qqmusic-api-python==0.8.2
 fastapi>=0.115
 uvicorn>=0.30
