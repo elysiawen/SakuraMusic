@@ -1,11 +1,11 @@
 /**
  * 网易云音乐适配器。
  *
- * 上游是 api-enhanced 的 Express 服务，其 HTTP 响应体就是网易云的原始 body
- * （`server.js` 只 send 了 `moduleResponse.body`），典型形态为
+ * 上游是本仓库自带的 `netease-upstream/`（薄 HTTP 层 + 钉住的 npm 版 SDK），
+ * 它把 SDK 返回的原始 body 原样发出来，典型形态为
  * `{ code: 200, result: {...} }` / `{ code: 200, data: [...] }`。
  *
- * 凭据通过 `Cookie` 头注入（`server.js` 会把请求 Cookie 合并进 `query.cookie`）。
+ * 凭据通过 `Cookie` 头注入（上游把它原样转给 SDK，不做拼接）。
  */
 import { config } from '../config';
 import { upstreamError } from '../lib/errors';
@@ -154,7 +154,7 @@ export function mapNeteaseSong(raw: unknown, privilege?: unknown): UnifiedTrack 
 /**
  * 网易云"这一档比那一档高"的顺序，只用于判断 `privilege.maxBrLevel` 覆盖到哪几档。
  *
- * 名字来自上游文档（api-enhanced 的 `/song/url/v1`）：
+ * 名字来自上游 SDK 项目对 `/song/url/v1` 的文档：
  * `jyeffect` 高清臻音、`jymaster` 超清母带、`sky` 沉浸环绕声（另有 `vivid` 臻音全景声、
  * `dolby` 杜比全景声 —— 我们没对外开这两档，故不列）。
  *

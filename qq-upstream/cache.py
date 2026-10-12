@@ -67,6 +67,11 @@ class ResponseCache:
         self._ttl = ttl
         self._entries: dict[str, _Entry] = {}
         self._inflight: dict[str, asyncio.Task[Any]] = {}
+        # 战绩（报给 /health，见 stats()）：每次 run() 恰好落到 hits / misses / coalesced 三类之一。
+        self._hits = 0
+        self._misses = 0
+        self._coalesced = 0
+        self._cooldown_hits = 0
 
     async def run(
         self,
@@ -80,15 +85,22 @@ class ResponseCache:
         if entry is not None:
             if entry.expires_at > now:
                 if entry.error is not None:
+                    # 命中风控冷却：把上次的失败结论复用给后来者（避免连环撞墙）。
+                    self._cooldown_hits += 1
                     raise entry.error
+                self._hits += 1
                 return entry.value
             del self._entries[key]
 
         task = self._inflight.get(key)
         if task is None:
+            self._misses += 1
             task = asyncio.create_task(factory())
             self._inflight[key] = task
             task.add_done_callback(lambda finished: self._forget(key, finished))
+        else:
+            # 有在途的同键请求，合并进去 —— 这正是这层缓存对风控最值钱的部分。
+            self._coalesced += 1
 
         # shield：调用方（浏览器）断开不能把这次共享的上游请求一起掐掉，
         # 否则同一刻在等的其它请求都会跟着失败。
@@ -108,6 +120,28 @@ class ResponseCache:
         # 等待方仍然会正常收到这个异常。
         if isinstance(error, RatelimitedError):
             self._entries[key] = _Entry(None, error, time.monotonic() + COOLDOWN_SECONDS)
+
+    def stats(self) -> dict[str, Any]:
+        """战绩快照，报给 /health。
+
+        三类去向互斥、加起来等于 run() 的总调用数：
+          * hits —— 直接命中缓存；
+          * misses —— 没有可用缓存，发起了新的一次上游请求；
+          * coalesced —— 也没有缓存，但合并进了在途的同键请求（省掉一次上游）。
+        cooldownHits 是命中风控冷却的次数，从 hits 里单列 —— 它大于 0 说明正在撞风控。
+        """
+        total = self._hits + self._misses + self._coalesced
+        return {
+            "ttlSeconds": self._ttl,
+            "cooldownSeconds": COOLDOWN_SECONDS,
+            "entries": len(self._entries),
+            "inflight": len(self._inflight),
+            "hits": self._hits,
+            "misses": self._misses,
+            "coalesced": self._coalesced,
+            "cooldownHits": self._cooldown_hits,
+            "hitRate": round(self._hits / total, 4) if total else 0,
+        }
 
 
 response_cache = ResponseCache()

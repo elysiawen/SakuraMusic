@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # 绝对导入：uvicorn 以顶层模块（`app:create_app`）加载本文件，
 # 包内的相对导入会因为没有父包而失败；服务目录由 run.py 放进 sys.path。
+from cache import response_cache
 from envelope import fail, status_for
 from mobile import mobile_sessions
 from routes import album, login, mobile, recommend, search, singer, song, songlist, top, user
@@ -89,6 +90,8 @@ def create_app() -> FastAPI:
             },
             "qrSessions": qr_sessions.size(),
             "mobileSessions": mobile_sessions.size(),
+            # 与网易云上游的 /health 对齐：把缓存战绩也报出来（见 cache.ResponseCache.stats）。
+            "cache": response_cache.stats(),
         }
 
     print(

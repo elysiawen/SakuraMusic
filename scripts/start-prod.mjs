@@ -23,7 +23,6 @@ import { resolve, relative } from 'node:path';
 
 const isWindows = process.platform === 'win32';
 const sakuraRoot = resolve(import.meta.dirname, '..');
-const parent = resolve(sakuraRoot, '..');
 
 const args = process.argv.slice(2);
 const options = {
@@ -65,6 +64,7 @@ if (!envFile) {
 
 const needsBuild = [
   resolve(sakuraRoot, 'gateway/dist/index.js'),
+  resolve(sakuraRoot, 'netease-upstream/dist/index.js'),
   resolve(sakuraRoot, 'web/dist/index.html'),
 ];
 const missing = needsBuild.filter((artifact) => !existsSync(artifact));
@@ -90,14 +90,14 @@ if (existsSync(resolve(sakuraRoot, 'gateway/.data/credential.key')) && !process.
 const tasks = [
   {
     name: 'netease',
-    label: '网易云上游',
+    label: '网易云上游（自建）',
     url: `http://127.0.0.1:${neteasePort}`,
+    // 跑编译产物（与网关同款）：源码在本仓库 netease-upstream/，不再 clone 上游仓库。
     command: process.execPath,
-    args: ['app.js'],
-    cwd: resolve(parent, 'api-enhanced'),
+    args: [resolve(sakuraRoot, 'netease-upstream/dist/index.js')],
+    cwd: resolve(sakuraRoot, 'netease-upstream'),
     shell: false,
-    env: { PORT: neteasePort },
-    required: resolve(parent, 'api-enhanced/app.js'),
+    env: { NETEASE_PORT: neteasePort },
   },
   {
     name: 'qqmusic',

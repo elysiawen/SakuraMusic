@@ -77,7 +77,7 @@ function retryDirect(): void {
  * 「关于」里列出来的**上游**项目。
  *
  * 只列真正的上游（网易云与 QQ 音乐这两条链路各自依赖了什么），框架/库不进这里。
- * 地址一律用官方仓库（取自 `scripts/bootstrap.mjs` 的克隆地址与 PyPI 包元数据，不是凭印象写的）；
+ * 地址一律用官方仓库（取自两个上游依赖的 npm / PyPI 元数据与 requirements.txt，不是凭印象写的）；
  * 用途写清楚"它在本项目里干什么"，否则一堆库名看不出所以然。
  */
 const CREDITS = [
@@ -85,13 +85,13 @@ const CREDITS = [
     group: '音乐上游',
     items: [
       {
-        name: 'api-enhanced',
-        note: '网易云音乐上游（MIT）。本仓库不含其源码，只在同级目录以独立进程 + HTTP 使用',
+        name: '@neteasecloudmusicapienhanced/api',
+        note: '网易云音乐上游 SDK（MIT）。本仓库自带的 netease-upstream 钉住它的发布版，加密 / 风控 / 接口变更都交给它',
         url: 'https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced',
       },
       {
         name: 'QQMusicApi / qqmusic-api-python',
-        note: 'QQ 音乐 SDK（GPLv3，PyPI 发布版 0.7.3）。本仓库自带的 qq-upstream 基于它实现三种扫码登录',
+        note: 'QQ 音乐 SDK（GPLv3，PyPI 发布版 0.8.2）。本仓库自带的 qq-upstream 基于它实现三种扫码登录',
         url: 'https://github.com/l-1124/QQMusicApi',
       },
     ],

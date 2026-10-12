@@ -60,7 +60,7 @@ export async function startBind(platform: Platform, loginType?: string): Promise
 
   if (platform === 'netease') {
     const key = await netease.qrKey();
-    if (!key) throw upstreamError('网易云未返回二维码标识，请确认 api-enhanced 服务已启动', 502);
+    if (!key) throw upstreamError('网易云未返回二维码标识，请确认网易云上游（netease-upstream）已启动', 502);
     const qrImage = await netease.qrImage(key);
     return { platform, identifier: key, qrImage, loginType: 'pc' };
   }

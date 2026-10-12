@@ -2,7 +2,7 @@
 
 聚合 **网易云音乐** 与 **QQ 音乐** 的自建音乐平台：一套账号系统、一次搜索同时命中两个平台、扫码登录后可自行选择把凭据存在服务器还是只存在本机。
 
-- 网易云上游是第三方项目 `../api-enhanced`（**保持零改动**，原样运行即可）；QQ 音乐上游是本仓库自带的 `qq-upstream/`，只依赖 PyPI 发布版 `qqmusic-api-python`。
+- 两个上游都在本仓库里，且都只依赖**已发布的第三方包**：网易云 `netease-upstream/`（npm 版 `@neteasecloudmusicapienhanced/api`）、QQ 音乐 `qq-upstream/`（PyPI 版 `qqmusic-api-python`）——**不需要克隆任何上游仓库**。
 - 不使用 Docker，全部为原生进程；数据库使用你已有的 PostgreSQL 实例。
 - 前端：Vue 3 + Vite + TypeScript + Pinia；网关：Node.js + Fastify + TypeScript。
 - 要开发其它客户端（桌面端 / 移动端 / 第三方前端）？接口清单见下文 **[主要接口](#主要接口)**，完整实现以 `gateway/src/routes/` 为准。
@@ -25,15 +25,17 @@
      Cookie 头注入凭据    │                  │
                          ▼                  ▼
         ┌──────────────────┐  ┌────────────────────────────────┐
-        │ api-enhanced     │  │ qq-upstream (:8080)            │
+        │ netease-upstream │  │ qq-upstream (:8080)            │
         │ (:3700)          │  │ 自建 QQ 音乐上游（FastAPI）      │
-        │ 网易云上游        │  │ 含三种扫码，App 走 MQTT 长连接   │
-        │ (Express)        │  │ 一个二维码一条连接               │
+        │ 自建网易云上游     │  │ 含三种扫码，App 走 MQTT 长连接   │
+        │ (Node + SDK)     │  │ 一个二维码一条连接               │
         └──────────────────┘  └────────────────────────────────┘
 ```
 
-> 自建上游直接 `import qqmusic_api` 复用官方 SDK，三种扫码登录也都在它里面：
-> 手机 QQ / 微信是请求-响应；QQ 音乐 App 扫码要为每个二维码维持一条 MQTT 长连接（见 `qq-upstream/mobile.py`）。
+> 两个自建上游都是"薄壳 + 钉住的发布版 SDK"：网易云复用 `@neteasecloudmusicapienhanced/api`，
+> QQ 音乐直接 `import qqmusic_api` 复用官方 SDK；加密、风控与接口变更都交给 SDK。
+> 三种扫码登录都在 QQ 上游里：手机 QQ / 微信是请求-响应，App 扫码要为每个二维码维持一条 MQTT 长连接
+> （见 `qq-upstream/mobile.py`）；网易云的扫码登录走它自己的 `/login/qr/*` 三个接口。
 
 > 多设备之间不直连：各客户端的播放状态与控制指令都经网关中转（`/api/connect/*`，一条 SSE 长连接），
 > 音频永远由每一台真正出声的设备自己去取 —— 控制端与跟随端都不承担别人的音频流量。完整协议见 `docs/connect-protocol.md`。
@@ -44,7 +46,7 @@
 
 | | 网易云 | QQ 音乐 |
 |---|---|---|
-| 注入方式 | `Cookie` 头（`api-enhanced` 会合并进 `query.cookie`） | `Cookie` 头（`musicid` / `musickey` / … ；按请求带什么就用什么，上游没有账号池） |
+| 注入方式 | `Cookie` 头（上游原样带上，不做任何拼接） | `Cookie` 头（`musicid` / `musickey` / … ；按请求带什么就用什么，上游没有账号池） |
 | 凭据形态 | 一整串 Cookie | 结构化 `Credential`，网关转成 Cookie |
 
 据此网关提供两种存储模式，请求链路完全一致：
@@ -70,11 +72,12 @@ sakura-music/
 │  │  ├─ services/          账户、凭据保险库、聚合、音频流、音乐库
 │  │  └─ routes/            HTTP 路由
 ├─ web/                     Vue 3 + Vite 前端（毛玻璃 + 6 套配色，默认深海蓝，浅色/暗色）
+├─ netease-upstream/        自建网易云上游（Node + 钉住的 npm 版 SDK；接口清单见该目录 src/endpoints.ts）
 ├─ qq-upstream/             自建 QQ 音乐上游（FastAPI，只依赖 PyPI 版 SDK；见该目录 app.py / mobile.py）
 ├─ docs/
 │  └─ connect-protocol.md   多设备播放协议（供 Android / Windows 等客户端对接）
 ├─ scripts/
-│  ├─ bootstrap.mjs         首次准备：克隆上游、装依赖、生成 gateway/.env、建表
+│  ├─ bootstrap.mjs         首次准备：装依赖（两个上游都在工作区里）、生成 gateway/.env、建表
 │  ├─ start-all.mjs         开发模式一键拉起 5 个进程（前端跑 Vite dev server）
 │  ├─ start-prod.mjs        生产模式一键拉起（网关跑 dist、前端跑静态产物）
 │  └─ serve-web.mjs         零依赖静态服务：托管 web/dist + 反代 /api（可单独运行）
@@ -105,22 +108,29 @@ git clone https://github.com/elysiawen/SakuraMusic.git ; cd SakuraMusic
 node scripts/bootstrap.mjs          # 也可以加 --start，准备完直接把全部进程拉起来
 ```
 
-它会依次：检查 Node / git / pnpm / Python → 把 `api-enhanced` 克隆到**本仓库的同级目录**（已存在则跳过并可选更新）→ 安装本仓库与上游依赖，并为自建 QQ 上游创建 `.runtime/qq-upstream-venv` → 生成 `gateway/.env`（自动写入随机 `CREDENTIAL_KEY`，会问你一次数据库连接串）→ 连库并幂等建表。
+它会依次：检查 Node / pnpm / Python → `pnpm install` 装好本仓库与**两个上游**的依赖（网易云上游的 SDK 就在工作区里），并为 QQ 上游创建 `.runtime/qq-upstream-venv` → 生成 `gateway/.env`（自动写入随机 `CREDENTIAL_KEY`，会问你一次数据库连接串）→ 连库并幂等建表。
 
 跑完执行 `pnpm start:all` 即可（或直接用 `node scripts/bootstrap.mjs --start`）。
 
-> **关于上游**：网易云用第三方项目 `api-enhanced`（MIT），本仓库**不包含它的源码**，只在同级目录以独立进程 + HTTP 的方式使用，因此许可证不受影响；QQ 音乐上游是本仓库自带的 `qq-upstream/` —— 只依赖 PyPI 发布版 `qqmusic-api-python`，不必再克隆 QQMusicApi 仓库，也不依赖 uv。
+> **关于上游**：两个上游都是本仓库自带的**薄壳**（`netease-upstream/`、`qq-upstream/`），重活交给第三方库：
+> 网易云用 npm 上的 `@neteasecloudmusicapienhanced/api`（MIT，版本**钉死**在它的 `package.json`），
+> QQ 音乐用 PyPI 上的 `qqmusic-api-python`（版本**钉死**在 `qq-upstream/requirements.txt`），都不依赖 uv。
+> 因此不需要克隆上游仓库，也不会出现"上游拉默认分支、同一份代码装出不同版本"的情况 ——
+> 升级 = 改 pin + 重装依赖 + 重启（网易云那侧还要 `pnpm build`，见「升级已有部署」）。
 
 下面是手动版步骤，需要逐步控制或排错时照着做。
 
 ### 1. 准备两个上游的依赖
 
+网易云上游是工作区里的一个包，依赖跟着根目录的 `pnpm install` 一起装（就在 `node_modules` 里）：
+
 ```powershell
-cd ../api-enhanced ; pnpm install
+pnpm install
 ```
 
-> 自建 QQ 上游的 Python 依赖由 `node scripts/bootstrap.mjs` 自动装进 `.runtime/qq-upstream-venv`；
-> 手动准备也可以：`python -m venv .runtime/qq-upstream-venv`，再 `pip install -r qq-upstream/requirements.txt`。
+QQ 上游另外还需要 Python 环境（它依赖 PyPI 包）：`node scripts/bootstrap.mjs` 会自动创建
+`.runtime/qq-upstream-venv` 并装好；手动准备也可以：`python -m venv .runtime/qq-upstream-venv`，
+再 `pip install -r qq-upstream/requirements.txt`。
 
 ### 2. 创建数据库
 
@@ -404,6 +414,9 @@ Nginx 托管 `web/dist` 时**不用拷文件、不用重启 Nginx、不用重启
 所以**表结构不需要手工迁移**：`git pull && pnpm install && pnpm build` 之后启动即可；
 也可以先显式跑一次 `pnpm db:init`（生产只装了生产依赖、没有 `tsx` 时用 `node gateway/dist/db/init.js`）。
 
+网易云上游是工作区里的一个包（`netease-upstream/`）：`pnpm install && pnpm build` 就会把它一起更新，
+重启时和网关一起换新 —— 它的 SDK 版本钉在 `netease-upstream/package.json` 里。
+
 **Python 那一侧不跟着 `pnpm install` 走。** QQ 上游的 SDK 钉在 `qq-upstream/requirements.txt` 里，
 那个文件改了就必须重装虚拟环境里的包，并**重启 QQ 上游**（进程里 import 的是启动那一刻的代码，
 装包不会影响已经在跑的进程 —— 只重装不重启，`/health` 会照旧报旧版本）：
@@ -473,7 +486,26 @@ QQ 音乐上游没起来 —— 这个能力已经并进上游服务，不再有
 `Get-NetTCPConnection -LocalPort 8080 -State Listen | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }`
 
 **网易云上游报 `xeapi public key is missing`**
-`api-enhanced` 启动时是「先取 xeapi 公钥 → 再用它注册匿名 token」的顺序，公钥缓存在系统临时目录（Linux 即 `/tmp/xeapi_public_key`）。**全新环境第一次启动必然报一次**（文件还没生成），随后它会自己拉取并写入，第二次启动就干净了。
+上游 SDK 启动时是「注册匿名 token + 取 xeapi 公钥」的顺序，两样都缓存在系统临时目录
+（Linux 即 `/tmp/anonymous_token`、`/tmp/xeapi_public_key`）。**全新环境第一次启动可能失败一次**
+（文件还没生成），随后它会自己拉取并写入，第二次启动就干净了 —— 网易云侧的网络时不时抽一下，
+这也是常态，不致命：免费接口（搜索 / 试听片段）照样能用。
+
+现在这两样是否就绪一眼可查，不用去翻文件：
+
+```bash
+curl -s http://127.0.0.1:3700/health
+# {..., "state":{"anonymousToken":true,"xeapiPublicKey":true}}
+```
+
+启动日志里也会写明缺了哪一个。
+
+**网易云上游启动时报 `Error: unexpected EOF` / `fzstd` / `neapiConfig.js`**
+SDK 4.41.x 起多了一步「neapi 密钥」引导（`register_neapikey`）：它去网易云取一份配置做 zstd 解压，
+而那份返回现在解不开 —— **必现，是上游自己的毛病**，被它自己的 try/catch 兜住，只打一行栈、不中断启动。
+449 个模块里只有它自己提到 `neapi`，**没有任何接口用这种加密**，所以不影响任何功能：要紧的匿名 token
+与 xeapi 公钥照常刷新（`/health` 的 `state` 里能看到），启动日志里现在也会先声明一句。
+哪天上游把它修好了，`neapi_key` 会自己出现在系统临时目录里，你什么都不用做。
 
 如果反复出现，通常是**属主冲突**：有人用 root 跑过一次（文件属主变成 root），之后换 www 跑就读得到、覆盖不了。
 
@@ -491,6 +523,25 @@ ls -ld /tmp                                        # 正常应为 drwxrwxrwt
 
 启动后访问 `http://127.0.0.1:8080/health`，它会直接报出**实际加载的 SDK 版本与路径** ——
 版本漂移（比如误用了 QQMusicApi 仓库里 dev 分支的可编辑安装）一眼就能看出来。
+
+**想换成原版上游（api-enhanced / QQMusicApi）**
+
+网关对两个上游只依赖「HTTP + JSON」这一层契约，不认识实现，所以**换回原项目照样能用**：
+
+- **网易云**：网关说的就是 api-enhanced 的 Express 契约（原样照抄，且做过逐接口比对）。把它克隆下来、
+  `pnpm install`、`node app.js` 跑起来，把它监听的地址填进 `NETEASE_BASE_URL` 即可；同时**别再启动**
+  本仓库的 `netease-upstream`（两者默认都占 3700）。
+- **QQ 音乐**：`qq-upstream/` 复刻的正是原项目 web 层的路径与 `{ code, msg, data }` 信封
+  （见 `qq-upstream/envelope.py` 开头），所以网关适配器也不用改，启动方式用原项目自己的
+  `uv run --no-sync web/run.py`。**唯一补不回来的是「QQ 音乐 App 扫码」**：它当年是独立进程
+  `sidecar/qq_mobile_login.py`（MQTT 长连接），该目录已随重构删除（可从 git 历史里取回），
+  不恢复它就只剩手机 QQ / 微信两种扫码。
+- 两边可以**混搭**（一个用原版、一个用自带的），两个地址本来就分别配置。
+
+换回原版会**失去**：版本钉住（原项目跟着 `git pull` 漂移）、`/health` 报 SDK 版本、token 状态与缓存战绩、
+以及 `pnpm install` 一把装齐；会**多出**：需要显式开 `ENABLE_GENERAL_UNBLOCK=true` 的灰歌解锁。
+（它那层 2 分钟响应缓存我们照抄了，见 `netease-upstream/src/cache.ts` —— 键同样是 `host + 完整 URL + cookies`，
+所以行为一致：只缓存 200、不做请求合并。）
 
 **改了上游端口后网易云一直失败**
 默认端口：网易云 `3700`、QQ 音乐 `8080`、网关 `8787`。
