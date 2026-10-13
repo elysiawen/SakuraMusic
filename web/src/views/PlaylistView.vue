@@ -97,7 +97,7 @@ async function load(): Promise<void> {
   }
 }
 
-/** 用「一起听」播放这个歌单：已在房间里就换歌单，否则以它为初始队列开一个房间。 */
+/** 用「一起听」播放这个歌单：已在房间里就换歌单，否则以它为初始队列开一个房间。*/
 async function startTogether(): Promise<void> {
   if (sortedTracks.value.length === 0) return;
   if (room.seatActive) room.setQueue(sortedTracks.value);
