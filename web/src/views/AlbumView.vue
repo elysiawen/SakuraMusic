@@ -9,12 +9,13 @@ import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
-import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { formatCount, formatDuration } from '@/utils/format';
 
 /** 专辑页：专辑信息 + 完整曲目。两个平台的专辑接口都已适配。 */
 const route = useRoute();
-const player = usePlayerStore();
+/** 播放全部：在房间里 = 换成一起听队列。 */
+const transport = useTransport();
 const toast = useToast();
 
 const detail = ref<AlbumDetail | null>(null);
@@ -92,7 +93,7 @@ watch([platform, albumId], load);
               class="btn btn-primary"
               type="button"
               :disabled="detail.items.length === 0"
-              @click="player.playQueue(detail.items)"
+              @click="transport.playList(detail.items)"
             >
               <AppIcon name="play" :size="14" filled />
               播放全部

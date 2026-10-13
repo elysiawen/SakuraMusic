@@ -38,6 +38,9 @@ export const authApi = {
     apiRequest<{ user: SakuraUser }>('/api/auth/profile', { method: 'PATCH', body: input }),
   changePassword: (oldPassword: string, newPassword: string) =>
     apiRequest<{ ok: boolean }>('/api/auth/password', { method: 'POST', body: { oldPassword, newPassword } }),
+  /** 删除账户及全部数据，不可恢复；需携带密码验证。 */
+  deleteAccount: (password: string) =>
+    apiRequest<{ ok: boolean }>('/api/auth/account', { method: 'DELETE', body: { password } }),
 };
 
 /* ------------------------------ 凭据 ------------------------------ */

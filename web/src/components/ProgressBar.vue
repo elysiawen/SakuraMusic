@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { formatDuration } from '@/utils/format';
 
 /**
@@ -17,6 +18,8 @@ const props = withDefaults(
 );
 
 const player = usePlayerStore();
+/** 拖动结束后的跳转：在房间里交给房间（服务端权威），否则直接 seek 本机。 */
+const transport = useTransport();
 const dragging = ref(false);
 const dragRatio = ref(0);
 
@@ -44,7 +47,7 @@ function endDrag(event: PointerEvent): void {
   if (!dragging.value) return;
   dragging.value = false;
   (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
-  player.seekByRatio(dragRatio.value);
+  transport.seekByRatio(dragRatio.value);
 }
 
 const ratio = computed(() => (dragging.value ? dragRatio.value : player.progress));

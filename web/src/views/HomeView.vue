@@ -53,11 +53,6 @@ const greeting = computed(() => {
 /** 绑定情况决定「每日推荐」「私人 FM」这类个性化板块是否可用。 */
 const signature = computed(() => [...credentials.boundPlatforms].sort().join(','));
 
-/*
- * 凭据列表是异步加载的，有可能晚于首页显示。它一到就同步一次签名，
- * 免得把「刚加载完」误判成「绑定关系变了」——否则每次刷新页面后
- * 第一次返回首页都会重新请求，又变回「点回来就换一批」。
- */
 watch(signature, (value) => {
   if (feed.value) cachedSignature = value;
 });

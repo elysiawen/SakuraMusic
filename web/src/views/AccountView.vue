@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { credentialApi } from '@/api';
+import { roomApi, type TogetherOverview, type TogetherPartner } from '@/api/room';
 import { PLATFORM_LABEL, type Platform } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
 import QrBindDialog from '@/components/QrBindDialog.vue';
+import TogetherPartnerDialog from '@/components/TogetherPartnerDialog.vue';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
-import { avatarGradient, formatRelativeTime } from '@/utils/format';
+import { avatarGradient, formatRelativeTime, formatTogetherDuration } from '@/utils/format';
 
 /**
  * 账户中心：只放「身份」相关的内容——Sakura 账号资料、密码，
@@ -34,6 +36,10 @@ const savingPassword = ref(false);
 const refreshing = ref<Platform | null>(null);
 const statusMap = ref<Partial<Record<Platform, { bound: boolean; valid: boolean }>>>({});
 
+const deletingAccount = ref(false);
+/** 删除账户前要输入的密码，服务端据此验证身份。 */
+const deletePassword = ref('');
+
 const platforms: Platform[] = ['netease', 'qq'];
 
 const modeOf = (platform: Platform) => credentials.modeByPlatform[platform] ?? null;
@@ -42,6 +48,32 @@ const profileOf = (platform: Platform) => credentials.profileOf(platform);
 const stats = computed(() => auth.stats);
 const boundCount = computed(() => platforms.filter((platform) => modeOf(platform)).length);
 const localCount = computed(() => credentials.localItems.length);
+
+/** 一起听总览：累计时长、一起听过的伙伴、次数。 */
+const together = ref<TogetherOverview | null>(null);
+const togetherLoading = ref(true);
+const togetherError = ref('');
+
+/** 点开的那位伙伴（null = 关着）。 */
+const openPartnerId = ref<string | null>(null);
+const openPartnerName = ref('');
+
+function openPartner(partner: TogetherPartner): void {
+  openPartnerId.value = partner.userId;
+  openPartnerName.value = partner.nickname;
+}
+
+async function loadTogether(): Promise<void> {
+  togetherLoading.value = true;
+  togetherError.value = '';
+  try {
+    together.value = await roomApi.overview();
+  } catch (error) {
+    togetherError.value = error instanceof Error ? error.message : '一起听数据加载失败';
+  } finally {
+    togetherLoading.value = false;
+  }
+}
 
 /**
  * 已绑定账号可用于展示的头像地址，「一键取用」和下面的凭据卡片共用。
@@ -106,6 +138,7 @@ onMounted(async () => {
   nickname.value = auth.user?.nickname ?? '';
   avatarUrl.value = auth.user?.avatar ?? '';
   void refreshAllStatus();
+  void loadTogether();
 });
 
 async function refreshAllStatus(): Promise<void> {
@@ -152,6 +185,25 @@ async function changePassword(): Promise<void> {
     toast.error(error instanceof Error ? error.message : '修改失败');
   } finally {
     savingPassword.value = false;
+  }
+}
+
+/** 删除账户：密码就是最后一道确认，服务端验证通过才删，成功即回登录页。 */
+async function deleteAccount(): Promise<void> {
+  const password = deletePassword.value;
+  if (!password) return;
+
+  deletingAccount.value = true;
+  try {
+    await auth.deleteAccount(password);
+    toast.success('账户已删除');
+    // deleteAccount 内部已清空登录态，直接回登录页。
+    window.location.href = '/login';
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '删除失败');
+    // 密码错了就留在原地，让用户重输。
+  } finally {
+    deletingAccount.value = false;
   }
 }
 
@@ -419,7 +471,124 @@ async function onBound(): Promise<void> {
       <p class="muted" style="font-size: 12px; margin: 12px 0 0">修改后所有设备的登录态都会失效，需要重新登录。</p>
     </section>
 
+    <!-- 危险操作：删除账户 -->
+    <section class="glass panel">
+      <div class="panel-title">
+        <AppIcon name="trash" :size="17" />
+        <h2>危险操作</h2>
+      </div>
+      <p class="muted" style="font-size: 12.5px; line-height: 1.7; margin: 0 0 14px">
+        删除账户会永久清除你的所有数据：歌单、收藏、播放历史、第三方音乐账号绑定、一起听记录。
+        此操作不可恢复。
+      </p>
+      <div class="row" style="gap: 10px; flex-wrap: wrap; align-items: flex-end">
+        <label class="stack" style="gap: 6px; flex: 1; min-width: 200px">
+          <span class="field-label">输入密码确认删除</span>
+          <input
+            v-model="deletePassword"
+            class="input"
+            type="password"
+            placeholder="请输入登录密码"
+            @keyup.enter="deleteAccount"
+          />
+        </label>
+        <button
+          class="btn btn-danger"
+          type="button"
+          :disabled="deletingAccount || !deletePassword"
+          @click="deleteAccount"
+        >
+          {{ deletingAccount ? '删除中…' : '删除账户' }}
+        </button>
+      </div>
+    </section>
+
+    <!-- 一起听 -->
+    <section class="glass panel">
+      <div class="panel-title">
+        <AppIcon name="users" :size="17" />
+        <h2>一起听</h2>
+        <span
+          v-if="together && together.partnerCount > 0"
+          class="muted"
+          style="font-size: 12px; margin-left: auto"
+        >
+          和 {{ together.partnerCount }} 位好友一起听过
+        </span>
+      </div>
+
+      <p v-if="togetherLoading" class="muted" style="font-size: 12.5px; margin: 0">正在统计…</p>
+      <p v-else-if="togetherError" class="muted" style="font-size: 12.5px; margin: 0">
+        {{ togetherError }}
+      </p>
+
+      <template v-else-if="together">
+        <p
+          v-if="together.partners.length === 0"
+          class="muted"
+          style="font-size: 12.5px; margin: 0; line-height: 1.7"
+        >
+          还没有和别人一起听过。点播放条上的「一起听」创建房间，把房间码或邀请链接发给好友即可开始。
+        </p>
+
+        <template v-else>
+          <div class="together-stats">
+            <div class="together-stat">
+              <span class="muted">累计时长</span>
+              <strong>{{ formatTogetherDuration(together.totalSeconds) }}</strong>
+            </div>
+            <div class="together-stat">
+              <span class="muted">一起听过的伙伴</span>
+              <strong>{{ together.partnerCount }} 人</strong>
+            </div>
+            <!-- 次数来自明细表：那张表被删掉时服务端给 null，这里就整个不出现。 -->
+            <div v-if="together.sessionCount !== null" class="together-stat">
+              <span class="muted">一起听次数</span>
+              <strong>{{ together.sessionCount }} 次</strong>
+            </div>
+          </div>
+
+          <ul class="together-partner-list">
+            <li v-for="partner in together.partners" :key="partner.userId">
+              <!-- 整行都是按钮：点开看这位好友的每次一起听记录。 -->
+              <button class="together-partner-row" type="button" @click="openPartner(partner)">
+                <span
+                  class="avatar"
+                  :style="{
+                    width: '38px',
+                    height: '38px',
+                    fontSize: '15px',
+                    background: avatarGradient(partner.nickname || partner.userId),
+                  }"
+                >
+                  <img v-if="partner.avatar" :src="partner.avatar" alt="" />
+                  <template v-else>{{ (partner.nickname || '友').slice(0, 1) }}</template>
+                </span>
+                <span class="stack" style="gap: 1px; min-width: 0; flex: 1">
+                  <strong class="truncate">{{ partner.nickname }}</strong>
+                  <span class="muted truncate" style="font-size: 11.5px">
+                    最近 {{ formatRelativeTime(partner.lastAt) }}
+                  </span>
+                </span>
+                <strong class="together-partner-time">
+                  {{ formatTogetherDuration(partner.seconds) }}
+                </strong>
+                <AppIcon name="chevron-right" :size="15" class="together-partner-more" />
+              </button>
+            </li>
+          </ul>
+        </template>
+      </template>
+    </section>
+
     <QrBindDialog :platform="bindPlatform" @close="bindPlatform = null" @bound="onBound" />
+
+    <TogetherPartnerDialog
+      :visible="openPartnerId !== null"
+      :partner-id="openPartnerId"
+      :partner-name="openPartnerName"
+      @close="openPartnerId = null"
+    />
   </div>
 </template>
 
@@ -448,5 +617,72 @@ async function onBound(): Promise<void> {
 .avatar-preset:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ------------------------------ 一起听 ------------------------------ */
+.together-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 26px;
+  margin-bottom: 14px;
+}
+
+.together-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+}
+
+/* 数字要比标签大得多：这一块就是给人看"听了多久"的。 */
+.together-stat strong {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.together-partner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.together-partner-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  /* 整行是个按钮：清掉浏览器给 button 的默认外观，只留我们自己的。 */
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.together-partner-row:hover {
+  background: var(--surface-hover);
+  border-color: var(--brand-300);
+}
+
+.together-partner-time {
+  flex: none;
+  color: var(--brand-600);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 右端的小箭头：提示这一行可以点开。 */
+.together-partner-more {
+  flex: none;
+  color: var(--text-mute);
 }
 </style>

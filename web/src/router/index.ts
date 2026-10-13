@@ -44,6 +44,11 @@ export const router = createRouter({
       name: 'settings',
       component: () => import('@/views/SettingsView.vue'),
     },
+    {
+      path: '/together',
+      name: 'together',
+      component: () => import('@/views/TogetherView.vue'),
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 });

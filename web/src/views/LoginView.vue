@@ -44,7 +44,7 @@ async function submit(): Promise<void> {
       toast.success('登录成功，开始听歌吧');
     } else {
       await auth.register(username.value.trim(), password.value);
-      toast.success('注册成功，第一个账号将成为管理员');
+      toast.success('注册成功');
     }
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/';
     await router.replace(redirect);

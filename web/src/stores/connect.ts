@@ -12,6 +12,7 @@ import {
 } from '@/api/connect';
 import type { UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
+import { livePosition, SYNC_SEEK_S, SYNC_TRIM_S, TRIM_RATE } from '@/utils/sync';
 import { usePlayerStore } from './player';
 
 const DEVICE_ID_KEY = 'sakura.connect.deviceId';
@@ -44,12 +45,8 @@ const LEADER_GRACE_MS = 15_000;
 const VOLUME_REPORT_DEBOUNCE_MS = 300;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
-/** 跟随时偏差超过这个秒数就直接 seek —— 靠速率微调追要等几十秒。 */
-const SYNC_SEEK_S = 3;
-/** 偏差超过这个秒数就开始用速率微调。 */
-const SYNC_TRIM_S = 0.15;
-/** 速率微调的幅度：±5%。听感上几乎察觉不到，但每秒能追回 50 毫秒。 */
-const TRIM_RATE = 0.05;
+// 同步相关的阈值（SYNC_SEEK_S / SYNC_TRIM_S / TRIM_RATE）与 livePosition 见 @/utils/sync
+// ——「一起听」房间用的是同一套。
 
 const NAME_MAX = 40;
 
@@ -136,23 +133,6 @@ function readEvent<T>(event: Event): T | null {
   }
 }
 
-/**
- * 把某台设备上报的进度推算到「现在」。
- *
- * 上报是 5 秒一次的，控制端照搬那个数字会一跳一跳；用服务端盖章的 positionAt
- * 加上本地流逝的时间，进度条就能连续走——代价是两端的时钟差，秒级误差可接受。
- */
-export function livePosition(state: ConnectPlaybackState | null, clockOffsetMs = 0): number {
-  if (!state) return 0;
-  if (!state.playing) return state.position;
-
-  // 用校正过的「服务端时间」去减服务端盖的 positionAt，避开两台机器的时钟差。
-  const elapsed = (Date.now() + clockOffsetMs - state.positionAt) / 1000;
-  const position = Math.max(0, state.position + elapsed);
-  // 掐上界：没有周期上报之后，控制端可能独自推算很久，播完那一刻会越过曲长。
-  return state.duration > 0 ? Math.min(position, state.duration) : position;
-}
-
 export const useConnectStore = defineStore('connect', () => {
   const toast = useToast();
 
@@ -160,6 +140,33 @@ export const useConnectStore = defineStore('connect', () => {
   const deviceName = ref(readDeviceName());
   const devices = ref<ConnectDevice[]>([]);
   const connected = ref(false);
+
+  /*
+   * 房间事件的转发口。
+   *
+   * SSE 连接由本 store 独占（一条连接同时承载设备与房间两类事件），房间 store 通过
+   * 订阅这里拿到 `room` / `room-playback` / `hello`；这样不必为房间再开一条长连接。
+   */
+  type RoomListener = (payload: unknown) => void;
+  const roomListeners = new Map<string, Set<RoomListener>>();
+
+  function onRoomEvent(event: string, listener: RoomListener): () => void {
+    let bucket = roomListeners.get(event);
+    if (!bucket) {
+      bucket = new Set();
+      roomListeners.set(event, bucket);
+    }
+    bucket.add(listener);
+    return () => {
+      bucket?.delete(listener);
+    };
+  }
+
+  function emitRoom(event: string, payload: unknown): void {
+    const bucket = roomListeners.get(event);
+    if (!bucket) return;
+    for (const listener of bucket) listener(payload);
+  }
 
   const self = computed<ConnectDevice | null>(
     () => devices.value.find((item) => item.deviceId === deviceId.value) ?? null,
@@ -386,6 +393,8 @@ export const useConnectStore = defineStore('connect', () => {
 
     stream.addEventListener('hello', (event) => {
       applyDevices(readEvent<{ devices?: ConnectDevice[] }>(event));
+      // 房间 store 靠它判断「连接（重新）建立了」，在被网关重启清空后重新入房。
+      emitRoom('hello', null);
       // 一连上就自报现状：网关重启或断线重连之后，这是唯一一次主动对表的机会。
       void report();
     });
@@ -400,6 +409,10 @@ export const useConnectStore = defineStore('connect', () => {
       const data = readEvent<{ from?: string; action?: ConnectAction; payload?: ConnectCommandPayload }>(event);
       if (data?.action) void applyRemoteCommand(data.action, data.payload ?? null, String(data.from ?? ''));
     });
+
+    // 房间事件走同一条连接：原样转发给订阅者（room store）。
+    stream.addEventListener('room', (event) => emitRoom('room', readEvent(event)));
+    stream.addEventListener('room-playback', (event) => emitRoom('room-playback', readEvent(event)));
 
     startReporting();
   }
@@ -773,6 +786,8 @@ export const useConnectStore = defineStore('connect', () => {
     self,
     others,
     othersPlaying,
+    /** 本机设备形态，房间创建/加入时随请求上报。 */
+    deviceKind: resolveKind(),
     start,
     stop,
     report,
@@ -787,5 +802,7 @@ export const useConnectStore = defineStore('connect', () => {
     /** 已校正时钟差的进度推算：界面显示远端进度一律用它。 */
     positionOf,
     rename,
+    /** 订阅 SSE 上的房间事件（room / room-playback / hello），返回取消订阅的函数。 */
+    onRoomEvent,
   };
 });

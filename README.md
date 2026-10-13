@@ -76,7 +76,9 @@ sakura-music/
 ├─ netease-upstream/        自建网易云上游（Node + 钉住的 npm 版 SDK；接口清单见该目录 src/endpoints.ts）
 ├─ qq-upstream/             自建 QQ 音乐上游（FastAPI，只依赖 PyPI 版 SDK；见该目录 app.py / mobile.py）
 ├─ docs/
-│  └─ connect-protocol.md   多设备播放协议（供 Android / Windows 等客户端对接）
+│  ├─ API.md                网关 HTTP 接口参考（含播放取流、音质、歌词、音乐库）
+│  ├─ connect-protocol.md   多设备播放协议（供 Android / Windows 等客户端对接）
+│  └─ together-protocol.md  一起听（房间）协议（供 Android / Windows 等客户端对接）
 ├─ scripts/
 │  ├─ bootstrap.mjs         首次准备：装依赖（两个上游都在工作区里）、生成 gateway/.env、建表
 │  ├─ start-all.mjs         开发模式一键拉起 5 个进程（前端跑 Vite dev server）
@@ -211,6 +213,7 @@ pnpm dev:web           # 终端 4  前端
 | 聚合搜索 | 两个平台并发搜索 → 标题+歌手归一化去重 → 相关性排序，同一首歌带多个 `sources`；页签与页码写入 URL，点进详情再返回仍停在原处 |
 | 播放 | 底部播放条（进度拖动、音量、上下首、列表/单曲/不循环、随机）、音质切换、**手动切源**、断点续传的 Range 代理；**下次打开自动回到上次的队列与进度**（停在那首歌的暂停状态，点一下续播） |
 | 多设备 | 同账号设备互相可见（一条 SSE 长连接）；远程控制进度 / 音量、把队列连进度搬到另一台设备；**双向跟随**——任意一台可镜像另一台同步播放（时钟校正 + 速率微调，实际稳在 ±100~300ms）；设备状态只在内存里，不落库 |
+| 一起听 | 和朋友共享同一个播放现场（6 位房间码 / 邀请链接）：**服务端权威**，谁都能切歌、暂停、拖进度、点歌，两端镜像同一首歌的同一进度（差值小则调速、大则直接跳，不反复 seek）；同账号的第二台设备自动成为「旁观」，可一键「把播放转移到本机」；一起听时长按「用户对」累计落库（跨房间跨会话），账户中心可见与每位好友的累计与明细；多人房暂未开放 |
 | 歌词 | LRC 解析、翻译/罗马音合并、逐行滚动、点击跳转、全屏歌词页（歌手与专辑可直接点进详情页） |
 | 音乐库 | 本地歌单增删改、收藏、播放历史（自动合并 5 分钟内的重复播放）；同一页可切到已绑定的**网易云 / QQ 音乐**账号，浏览它的歌单（收藏「我喜欢」也在其中）并**一键导入成本地歌单**——只读 + 单向复制，不与平台同步 |
 | 发现 | 网易云每日推荐 / 私人 FM / 榜单，QQ 猜你喜欢 / 新歌速递 / 热门歌单 / 排行榜 |
@@ -291,6 +294,21 @@ pnpm dev:web           # 终端 4  前端
 | POST | `/api/connect/command` | 控制其它设备（或把播放搬过去） |
 
 > 字段、事件、接管时序等细节见 `docs/connect-protocol.md`。
+
+**一起听**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/rooms/create` | 创建房间（可带初始队列），返回 6 位房间码 |
+| POST | `/api/rooms/join` | 凭房间码入房；**同账号的第二台设备执行它就是「把播放转移过来」** |
+| POST | `/api/rooms/action` | 提交播放动作（`play` / `pause` / `seek` / `next` / `add` / `unplayable` …） |
+| POST | `/api/rooms/leave` / `/api/rooms/dissolve` | 自己退出（房间留给对方）/ 结束整个房间 |
+| GET | `/api/rooms/:code` | 入房前预览：房间类型、席位在哪台设备、在放什么 |
+| GET | `/api/rooms/overview` | 我的累计一起听时长与伙伴数（账户中心用） |
+| GET | `/api/rooms/overview/:partnerId` | 与某位好友的每次一起听明细 |
+
+> 房间事件复用设备那条 SSE（`room` / `room-playback`）；席位、旁观与「转移到本机」的完整语义见
+> `docs/together-protocol.md`。
 
 </details>
 

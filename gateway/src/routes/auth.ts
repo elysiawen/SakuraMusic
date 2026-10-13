@@ -52,4 +52,17 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     reply.clearCookie('sakura_session', { path: '/' });
     return { ok: true };
   });
+
+  /**
+   * 删除账户。
+   *
+   * 会连用户的所有数据一起清掉（会话、凭据、歌单、收藏、历史、一起听记录），
+   * 不可恢复。必须带着密码，服务端验证通过才删。
+   */
+  app.delete<{ Body: { password?: string } }>('/api/auth/account', async (request, reply) => {
+    const user = await requireUser(request);
+    await users.deleteAccount(user.id, String(request.body?.password ?? ''));
+    reply.clearCookie('sakura_session', { path: '/' });
+    return { ok: true };
+  });
 }

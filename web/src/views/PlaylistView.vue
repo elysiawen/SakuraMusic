@@ -11,16 +11,21 @@ import PlaylistDialog from '@/components/PlaylistDialog.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
+import { useTransport } from '@/composables/useTransport';
 import { useLibraryStore } from '@/stores/library';
 import { usePlayerStore } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
 import { formatDuration } from '@/utils/format';
 
 const route = useRoute();
 const router = useRouter();
 const player = usePlayerStore();
 const library = useLibraryStore();
+const room = useRoomStore();
 const toast = useToast();
 const confirm = useConfirm();
+/** 播放全部：在房间里 = 把这个歌单换成一起听队列。 */
+const transport = useTransport();
 
 const playlist = ref<Playlist | null>(null);
 const tracks = ref<UnifiedTrack[]>([]);
@@ -90,6 +95,13 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/** 用「一起听」播放这个歌单：已在房间里就换歌单，否则以它为初始队列开一个房间。 */
+async function startTogether(): Promise<void> {
+  if (sortedTracks.value.length === 0) return;
+  if (room.seatActive) room.setQueue(sortedTracks.value);
+  else await room.create(sortedTracks.value);
 }
 
 /** 弹窗保存成功后用返回值就地更新，不必为一个名称再拉一次详情。 */
@@ -166,9 +178,13 @@ void formatDuration;
             {{ playlist.description }}
           </p>
           <div class="row" style="gap: 8px; flex-wrap: wrap">
-            <button class="btn btn-primary" type="button" :disabled="tracks.length === 0" @click="player.playQueue(sortedTracks)">
+            <button class="btn btn-primary" type="button" :disabled="tracks.length === 0" @click="transport.playList(sortedTracks)">
               <AppIcon name="play" :size="14" filled />
               播放全部
+            </button>
+            <button class="btn" type="button" :disabled="tracks.length === 0" @click="startTogether">
+              <AppIcon name="users" :size="14" />
+              {{ room.seatActive ? '设为一起听队列' : '一起听播放' }}
             </button>
             <button class="btn" type="button" @click="editOpen = true">
               <AppIcon name="edit" :size="14" />

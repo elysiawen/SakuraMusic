@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import type { UnifiedTrack } from '@/api/types';
-import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { formatArtists } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
 
 const props = defineProps<{ track: UnifiedTrack; list?: UnifiedTrack[] }>();
 
-const player = usePlayerStore();
+/** 在房间里点击卡片 = 点歌并播放；否则替换本机队列。 */
+const transport = useTransport();
 </script>
 
 <template>
-  <div class="track-card" @click="player.playTrack(props.track, props.list)">
+  <div class="track-card" @click="transport.playTrack(props.track, props.list)">
     <div class="track-card-cover">
       <CoverArt
         :src="track.album.cover"

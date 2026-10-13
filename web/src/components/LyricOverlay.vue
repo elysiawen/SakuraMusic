@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { activeLineIndex, parseLyric, type LyricLine } from '@/utils/lyric';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
@@ -11,9 +12,12 @@ import ProgressBar from './ProgressBar.vue';
 import QualityPicker from './QualityPicker.vue';
 import QueueButton from './QueueButton.vue';
 import SourcePicker from './SourcePicker.vue';
+import TogetherButton from './TogetherButton.vue';
 import VolumeControl from './VolumeControl.vue';
 
 const player = usePlayerStore();
+/** 传输控制：在「一起听」房间里会走房间（服务端权威），否则直接控制本机播放器。 */
+const transport = useTransport();
 
 /* ------------------------------ 键盘提示 ------------------------------ */
 /** 关掉后不再出现，状态存在本地（与播放器其它偏好一致，按浏览器记住）。 */
@@ -117,15 +121,15 @@ function onKeydown(event: KeyboardEvent): void {
       break;
     case ' ':
       event.preventDefault();
-      player.toggle();
+      transport.toggle();
       break;
     case 'ArrowRight':
       event.preventDefault();
-      player.seek(player.currentTime + 5);
+      transport.seek(player.currentTime + 5);
       break;
     case 'ArrowLeft':
       event.preventDefault();
-      player.seek(player.currentTime - 5);
+      transport.seek(player.currentTime - 5);
       break;
     // 全屏页没有常驻音量条，用键盘调音量最顺手（setVolume 会顺带取消静音）。
     case 'ArrowUp':
@@ -176,11 +180,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
         <div class="lyric-actions">
           <!--
-            放在点赞左边。锚点右边还有两个按钮，所以它的面板没法跟着锚点的水平位置展开
-            （朝左或朝右都有一边会顶出屏幕）——窄屏下由组件自己改为贴屏幕两侧。
+            在最左边。锚点右边还有两个按钮（一起听、队列），所以它的面板没法跟着锚点的
+            水平位置展开（朝左或朝右都有一边会顶出屏幕）——窄屏下由组件自己改为贴屏幕两侧。
           -->
           <DevicePicker placement="down" :size="18" />
-          <LikeButton :size="18" />
+          <TogetherButton placement="down" :size="18" />
           <QueueButton placement="down" :size="18" />
         </div>
       </header>
@@ -192,7 +196,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
             <CoverArt fill :src="cover" radius="24px" :alt="track.title" :seed="track.title" />
           </button>
 
-          <h1 class="lyric-title">{{ track.title }}</h1>
+          <!--
+            收藏就挂在歌名右边：它原来在右上角的动作组里，离「这首歌是什么」隔了整页，
+            想收藏得先抬头去一排图标里找那颗心。挂在歌名旁边，看歌名的时候手就在按钮上。
+          -->
+          <div class="lyric-title-row">
+            <h1 class="lyric-title">{{ track.title }}</h1>
+            <LikeButton :size="18" />
+          </div>
           <!--
             歌手与专辑都可点进详情页（平台信息齐全才跳，和 TrackList 的判断一致）。
             专辑跟在歌手右边、以中点分隔，并保持更淡的层次，避免和歌手抢注意力。
@@ -264,7 +275,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
                 class="lyric-line"
                 :class="{ 'is-active': index === activeIndex }"
                 :style="{ opacity: lineOpacity(index) }"
-                @click="player.seek(line.time)"
+                @click="transport.seek(line.time)"
               >
                 <span class="lyric-text">{{ line.text || '♪' }}</span>
                 <span v-if="line.trans" class="lyric-trans">{{ line.trans }}</span>
@@ -284,20 +295,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
         <ProgressBar show-times />
         <div class="transport">
           <PlayModePicker />
-          <button class="icon-btn transport-skip" type="button" title="上一首" @click="player.prev()">
+          <button class="icon-btn transport-skip" type="button" title="上一首" @click="transport.prev()">
             <AppIcon name="prev" :size="21" filled />
           </button>
           <button
             class="play-btn is-compact"
             type="button"
             :title="player.playing ? '暂停（空格）' : '播放（空格）'"
-            @click="player.toggle()"
+            @click="transport.toggle()"
           >
             <AppIcon v-if="player.loading" name="refresh" :size="19" class="spin" />
             <AppIcon v-else-if="player.playing" name="pause" :size="19" filled />
             <AppIcon v-else name="play" :size="19" filled />
           </button>
-          <button class="icon-btn transport-skip" type="button" title="下一首" @click="player.next()">
+          <button class="icon-btn transport-skip" type="button" title="下一首" @click="transport.next()">
             <AppIcon name="next" :size="21" filled />
           </button>
           <VolumeControl />
@@ -492,6 +503,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
   box-shadow:
     0 44px 70px -30px rgba(var(--brand-rgb), 0.72),
     0 16px 34px -18px rgba(0, 0, 0, 0.4);
+}
+
+/*
+ * 歌名与收藏同行。歌名可能很长（还要在窄屏换行），所以给它 min-width: 0 让它自己收缩换行，
+ * 那颗心 flex: none 始终贴在右边、不被挤扁。
+ */
+.lyric-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lyric-title-row .lyric-title {
+  min-width: 0;
+}
+
+/*
+ * 心收一档：顶栏通用的 36px 圆形热区挂在 30px 的字旁边显得笨重，缩到 32px 仍然好点。
+ * 只覆盖热区尺寸，图标本身仍是 18px（与右上角那排图标同一号）。
+ */
+.lyric-title-row .icon-btn {
+  flex: none;
+  width: 32px;
+  height: 32px;
 }
 
 .lyric-title {

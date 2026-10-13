@@ -17,15 +17,18 @@ import LoadingState from '@/components/LoadingState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
+import { useTransport } from '@/composables/useTransport';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
-import { usePlayerStore } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
 import { formatRelativeTime } from '@/utils/format';
 import { describeImport } from '@/utils/platformImport';
 
 const library = useLibraryStore();
-const player = usePlayerStore();
+const room = useRoomStore();
+/** 播放全部：在房间里 = 换成一起听队列。 */
+const transport = useTransport();
 const auth = useAuthStore();
 const router = useRouter();
 const toast = useToast();
@@ -150,8 +153,8 @@ async function playPlaylist(playlist: Playlist): Promise<void> {
       toast.info(`「${playlist.name}」还是空的，先加几首歌`);
       return;
     }
-    await player.playQueue(result.items);
-    toast.success(`正在播放「${playlist.name}」`);
+    transport.playList(result.items);
+    toast.success(room.seatActive ? `已加入一起听：「${playlist.name}」` : `正在播放「${playlist.name}」`);
   } catch (error) {
     toast.error(error instanceof Error ? error.message : '歌单加载失败');
   }
@@ -198,7 +201,7 @@ async function removePlaylist(id: string, name: string): Promise<void> {
           v-else-if="tab === 'favorites' && library.favorites.length > 0"
           class="btn btn-primary"
           type="button"
-          @click="player.playQueue(library.favorites)"
+          @click="transport.playList(library.favorites)"
         >
           <AppIcon name="play" :size="14" filled />
           播放全部

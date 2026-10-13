@@ -14,12 +14,14 @@ import { useAuthStore } from '@/stores/auth';
 import { useConnectStore } from '@/stores/connect';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
+import { useRoomStore } from '@/stores/room';
 
 const route = useRoute();
 const auth = useAuthStore();
 const connect = useConnectStore();
 const credentials = useCredentialStore();
 const library = useLibraryStore();
+const room = useRoomStore();
 
 const bindPlatform = ref<Platform | null>(null);
 
@@ -41,10 +43,14 @@ watch(
   (authenticated) => {
     if (!authenticated) {
       // 设备长连接跟着登录态走：未登录时建立只会拿到 401，白试一次。
+      // 房间订阅着这条连接的房间事件，先收掉房间再断连接。
+      room.reset();
       connect.stop();
       return;
     }
     connect.start();
+    // 房间事件与设备事件共用这条 SSE：登录取到连接后订阅一次即可。
+    room.init();
     void Promise.all([credentials.refreshLists(), library.loadAll()]);
   },
   { immediate: true },

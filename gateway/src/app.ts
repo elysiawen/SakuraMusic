@@ -8,7 +8,10 @@ import { registerCredentialRoutes } from './routes/credentials';
 import { registerLibraryRoutes } from './routes/library';
 import { registerMusicRoutes } from './routes/music';
 import { registerPlatformRoutes } from './routes/platform';
+import { registerRoomRoutes } from './routes/rooms';
 import { registerStreamRoutes } from './routes/stream';
+import { setDeviceLifecycleHooks } from './services/connect';
+import { onDeviceOffline, onDeviceOnline } from './services/rooms';
 
 /** 允许携带 Cookie 的跨域来源白名单（开发环境为 Vite dev server）。 */
 function applyCors(app: FastifyInstance): void {
@@ -90,6 +93,12 @@ export async function buildApp(): Promise<FastifyInstance> {
     upstreams: { netease: config.neteaseBaseUrl, qq: config.qqBaseUrl },
   }));
 
+  /*
+   * 设备上下线时通知「一起听」房间：重连自动恢复席位并补推快照，断线给一段宽限。
+   * 在这里注入而不是让两个服务互相 import，避免形成依赖环。
+   */
+  setDeviceLifecycleHooks({ onOnline: onDeviceOnline, onOffline: onDeviceOffline });
+
   await registerAuthRoutes(app);
   await registerCredentialRoutes(app);
   await registerMusicRoutes(app);
@@ -97,6 +106,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await registerPlatformRoutes(app);
   await registerStreamRoutes(app);
   await registerConnectRoutes(app);
+  await registerRoomRoutes(app);
 
   return app;
 }

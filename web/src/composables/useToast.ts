@@ -20,7 +20,11 @@ function push(message: string, type: Toast['type'], duration = 3200): void {
 export function useToast() {
   return {
     toasts: readonly(toasts),
-    info: (message: string) => push(message, 'info'),
+    /**
+     * 提示。`duration` 可覆盖默认的 3.2 秒——用在「错过就不知道发生了什么」的消息上
+     * （例如一起听被对方结束），让用户来得及看见。
+     */
+    info: (message: string, duration?: number) => push(message, 'info', duration),
     success: (message: string) => push(message, 'success'),
     error: (message: string) => push(message, 'error', 4200),
   };

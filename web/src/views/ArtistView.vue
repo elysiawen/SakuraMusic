@@ -10,12 +10,13 @@ import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
-import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { formatCount } from '@/utils/format';
 
 /** 歌手页：基本信息 + 热门歌曲 + 专辑列表。 */
 const route = useRoute();
-const player = usePlayerStore();
+/** 播放全部：在房间里 = 换成一起听队列。 */
+const transport = useTransport();
 const toast = useToast();
 
 const detail = ref<ArtistDetail | null>(null);
@@ -84,7 +85,7 @@ watch([platform, artistId], load);
               class="btn btn-primary"
               type="button"
               :disabled="detail.items.length === 0"
-              @click="player.playQueue(detail.items)"
+              @click="transport.playList(detail.items)"
             >
               <AppIcon name="play" :size="14" filled />
               播放热门歌曲

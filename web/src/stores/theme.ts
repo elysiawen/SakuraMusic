@@ -13,7 +13,6 @@ export interface PresetMeta {
   description: string;
   /** 用于选择器色块的三段渐变色，需与 themes.css 中的品牌色保持一致。 */
   colors: [string, string, string];
-  /** 深色模式下的页面底色，用于同步浏览器主题色。 */
   darkBg: string;
 }
 

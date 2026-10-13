@@ -9,13 +9,14 @@ import DetailSkeleton from '@/components/DetailSkeleton.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
+import { useTransport } from '@/composables/useTransport';
 import { useLibraryStore } from '@/stores/library';
-import { usePlayerStore } from '@/stores/player';
 import { formatDuration } from '@/utils/format';
 import { describeImport } from '@/utils/platformImport';
 
 const route = useRoute();
-const player = usePlayerStore();
+/** 播放全部：在房间里 = 换成一起听队列。 */
+const transport = useTransport();
 const toast = useToast();
 
 const detail = ref<CollectionDetail | null>(null);
@@ -98,7 +99,7 @@ async function importPlaylist(): Promise<void> {
             {{ detail.items.length }} 首 · 总时长 {{ formatDuration(totalDuration) }}
           </p>
           <div class="row" style="gap: 8px; flex-wrap: wrap">
-            <button class="btn btn-primary" type="button" @click="player.playQueue(detail.items)">
+            <button class="btn btn-primary" type="button" @click="transport.playList(detail.items)">
               <AppIcon name="play" :size="14" filled />
               播放全部
             </button>

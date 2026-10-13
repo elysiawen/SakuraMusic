@@ -59,8 +59,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function logout(): Promise<void> {
-    await authApi.logout();
+  /**
+   * 清空本地的登录态与相关残留（播放器、仅本机凭据）。
+   * 退出登录与删除账户两条路径共用，避免两边各写一份、慢慢长歪。
+   */
+  async function clearSession(): Promise<void> {
     user.value = null;
     stats.value = null;
 
@@ -78,8 +81,11 @@ export const useAuthStore = defineStore('auth', () => {
     const credentialStore = useCredentialStore();
     credentialStore.localItems = [];
     credentialStore.serverItems = [];
+  }
 
-    // 以上都放在 logout 里而不是各个组件里，是为了让所有退出路径都覆盖到。
+  async function logout(): Promise<void> {
+    await authApi.logout();
+    await clearSession();
   }
 
   async function updateProfile(input: { nickname?: string; avatar?: string | null }): Promise<void> {
@@ -92,6 +98,12 @@ export const useAuthStore = defineStore('auth', () => {
     // 服务端已吊销全部会话，本地同步清空登录态。
     user.value = null;
     stats.value = null;
+  }
+
+  /** 删除账户及全部数据。需验证密码；成功后本地清空登录态（与退出同一套收尾）。 */
+  async function deleteAccount(password: string): Promise<void> {
+    await authApi.deleteAccount(password);
+    await clearSession();
   }
 
   return {
@@ -107,5 +119,6 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     updateProfile,
     changePassword,
+    deleteAccount,
   };
 });

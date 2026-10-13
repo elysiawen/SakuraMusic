@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { usePlayerStore } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
+import { useTransport } from '@/composables/useTransport';
 import { formatArtists, formatDuration } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
@@ -11,8 +13,15 @@ const props = withDefaults(defineProps<{ open: boolean; placement?: 'up' | 'down
 const emit = defineEmits<{ (event: 'close'): void }>();
 
 const player = usePlayerStore();
+const room = useRoomStore();
+/** 队列行的播放/选歌：在房间里走房间（服务端权威、两端一致）。 */
+const transport = useTransport();
 const listRef = ref<HTMLElement | null>(null);
 
+/*
+ * 在房间里，player.queue 已被镜像成房间队列（见 stores/room.ts），
+ * 所以这里照读 player.queue 即可；只是操作要按房间语义分发。
+ */
 const queue = computed(() => player.queue);
 
 /** 打开时把当前播放项滚到可视区中间。 */
@@ -34,13 +43,21 @@ watch(
   <div v-if="open" class="queue-panel" :class="`is-${props.placement}`">
     <header class="between queue-head">
       <div class="stack" style="gap: 1px">
-        <strong style="font-size: 14px">播放队列</strong>
+        <strong style="font-size: 14px">{{ room.seatActive ? '一起听队列' : '播放队列' }}</strong>
         <span class="muted" style="font-size: 11.5px">
           {{ queue.length }} 首<template v-if="player.current"> · 正在播放第 {{ player.index + 1 }} 首</template>
+          <template v-if="room.seatActive"> · 双方共享</template>
         </span>
       </div>
       <div class="row" style="gap: 4px">
-        <button class="btn btn-ghost" type="button" :disabled="queue.length === 0" @click="player.clearQueue()">
+        <!-- 房间队列由服务端权威维护，没有「清空」这个操作：换歌单请用歌单页的入口。 -->
+        <button
+          v-if="!room.seatActive"
+          class="btn btn-ghost"
+          type="button"
+          :disabled="queue.length === 0"
+          @click="player.clearQueue()"
+        >
           清空
         </button>
         <button class="icon-btn" type="button" title="关闭" @click="emit('close')">
@@ -48,6 +65,10 @@ watch(
         </button>
       </div>
     </header>
+
+    <p v-if="room.seatActive" class="muted queue-room-hint">
+      队列由房间共享：切歌、选歌、移除都会同步给对方。
+    </p>
 
     <div ref="listRef" class="queue-list">
       <p v-if="queue.length === 0" class="muted queue-empty">队列是空的，去挑几首歌吧</p>
@@ -57,7 +78,7 @@ watch(
         :key="`${track.key}-${position}`"
         class="queue-row"
         :class="{ 'is-current': position === player.index }"
-        @click="player.playAt(position)"
+        @click="transport.playAt(position)"
       >
         <span class="queue-index">
           <AppIcon v-if="position === player.index && player.playing" name="volume" :size="14" />
@@ -79,7 +100,7 @@ watch(
           class="icon-btn queue-remove"
           type="button"
           title="从队列移除"
-          @click.stop="player.removeFromQueueAt(position)"
+          @click.stop="room.seatActive ? room.removeAt(position) : player.removeFromQueueAt(position)"
         >
           <AppIcon name="close" :size="14" />
         </button>
@@ -131,6 +152,12 @@ watch(
   padding: 26px 0;
   text-align: center;
   font-size: 12.5px;
+}
+
+.queue-room-hint {
+  margin: 8px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
 }
 
 .queue-row {

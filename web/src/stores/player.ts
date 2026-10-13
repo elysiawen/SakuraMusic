@@ -78,6 +78,19 @@ function pickSource(track: UnifiedTrack, preferred: Platform | null): TrackSourc
   return track.sources[0] ?? null;
 }
 
+/**
+ * 把「解析播放地址」的失败分类。
+ *
+ * 网关在歌曲没有可用地址（版权 / 会员限制）时会返回 404 `upstream_error`；未绑定账号是
+ * 428。这些都属于「这首在这个账号下播不了」。5xx 与网络错误（没有 status）算临时失败。
+ * 401（会话过期）也不该被当成播不了——那是登录态的问题。
+ */
+function classifyResolveError(caught: unknown): 'unplayable' | 'transient' {
+  const status = (caught as { status?: number } | null)?.status;
+  if (typeof status !== 'number' || status === 401) return 'transient';
+  return status >= 400 && status < 500 ? 'unplayable' : 'transient';
+}
+
 export const usePlayerStore = defineStore('player', () => {
   const persisted = loadPersisted();
   const toast = useToast();
@@ -89,6 +102,98 @@ export const usePlayerStore = defineStore('player', () => {
   const playing = ref(false);
   const loading = ref(false);
   const error = ref('');
+  /**
+   * 最近一次播放失败的分类信号。
+   *
+   * 「一起听」用它判断某首歌是不是**确定性播不了**（无音源 / 版权或会员限制 / 只能试听），
+   * 从而让全员跳过；网络抖动、5xx 之类归为 transient，绝不能被当成「播不了」而跳歌。
+   * 每次失败都换一个新对象，订阅方靠它触发。
+   */
+  const lastFailure = ref<{ key: string; kind: 'unplayable' | 'transient'; at: number } | null>(null);
+
+  function markFailure(key: string, kind: 'unplayable' | 'transient'): void {
+    lastFailure.value = { key, kind, at: Date.now() };
+  }
+
+  /**
+   * 「一曲播完」的接管口。
+   *
+   * 返回 `true` 表示已处理，播放器不再自行切下一首。「一起听」用它把握手交给服务端
+   * （上报 `ended` 由权威队列统一切歌），避免两端各切各的。
+   */
+  let endHandler: (() => boolean) | null = null;
+
+  function setEndHandler(handler: (() => boolean) | null): void {
+    endHandler = handler;
+  }
+
+  /**
+   * 浏览器的自动播放策略（`NotAllowedError`）：页面还没有过用户交互就不给出声。
+   *
+   * **这不是播放失败**，而是一次「待兑现的播放意图」。最典型的触发场景恰恰是「一起听」：
+   * 通过邀请链接进来、或刷新后自动回房时，用户一个手势都还没给过，此时镜像要播放就必然被拒。
+   * 所以不报错、不弹英文原文，只记下来，等用户第一次碰页面时补上。
+   */
+  let autoplayPending = false;
+  /** 提示只弹一次：镜像节拍每 200ms 会重试一次 play()，不能每轮都弹。 */
+  let autoplayNoticeShown = false;
+  let gestureUnlockArmed = false;
+
+  function isAutoplayBlocked(caught: unknown): boolean {
+    return (
+      typeof DOMException !== 'undefined' &&
+      caught instanceof DOMException &&
+      caught.name === 'NotAllowedError'
+    );
+  }
+
+  /** 等用户第一次与页面交互（点一下 / 按一下键）时，把本该在放的那首续上。 */
+  function armGestureUnlock(): void {
+    if (gestureUnlockArmed) return;
+    gestureUnlockArmed = true;
+
+    const retry = (): void => {
+      document.removeEventListener('pointerdown', retry, true);
+      document.removeEventListener('keydown', retry, true);
+      gestureUnlockArmed = false;
+      if (!autoplayPending) return;
+      autoplayPending = false;
+      const element = audio;
+      // 用户可能在这期间自己按了暂停、或切了歌：那就别再自作主张地响起来。
+      if (!element?.src || !element.paused) return;
+      void element.play().catch(() => undefined);
+    };
+
+    // 捕获阶段监听：别人的 handler 调了 stopPropagation 也拦不住这次补救。
+    document.addEventListener('pointerdown', retry, true);
+    document.addEventListener('keydown', retry, true);
+  }
+
+  function noteAutoplayBlocked(): void {
+    autoplayPending = true;
+    if (!autoplayNoticeShown) {
+      autoplayNoticeShown = true;
+      toast.info('浏览器阻止了自动播放，点一下页面即可继续');
+    }
+    armGestureUnlock();
+  }
+
+  /** 明确暂停 / 停止 / 真正出声之后，这条待兑现的意图就作废了。 */
+  function dropAutoplayIntent(): void {
+    autoplayPending = false;
+    autoplayNoticeShown = false;
+  }
+
+  /** `play()` / `toggle()` 的失败收尾：自动播放被拦走上面的路，其它错误照旧报出来。 */
+  function handlePlayRejection(caught: unknown): void {
+    if (isAutoplayBlocked(caught)) {
+      noteAutoplayBlocked();
+      return;
+    }
+    const message = caught instanceof Error ? caught.message : '播放失败';
+    error.value = message;
+    toast.error(message);
+  }
   const currentTime = ref(0);
   const duration = ref(0);
   const volume = ref(typeof persisted.volume === 'number' ? persisted.volume : 0.8);
@@ -220,8 +325,21 @@ export const usePlayerStore = defineStore('player', () => {
    */
   let persistTimer: number | undefined;
 
+  /**
+   * 暂停落盘。
+   *
+   * 「一起听」房间期间，播放器被房间队列接管；若不暂停落盘，房间的队列与进度会把
+   * 用户的个人播放现场（`sakura.player`）覆盖掉，退出房间后就「续不上」自己原本在听的东西。
+   * 退出房间恢复现场后再打开。
+   */
+  let persistencePaused = false;
+
+  function setPersistencePaused(value: boolean): void {
+    persistencePaused = value;
+  }
+
   function persistSoon(): void {
-    if (persistTimer !== undefined) return;
+    if (persistencePaused || persistTimer !== undefined) return;
     persistTimer = window.setTimeout(() => {
       persistTimer = undefined;
       persist();
@@ -229,6 +347,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function persist(): void {
+    if (persistencePaused) return;
     const capped = capQueue(queue.value, index.value);
     const state: PersistedPlayerState = {
       volume: volume.value,
@@ -319,9 +438,20 @@ export const usePlayerStore = defineStore('player', () => {
     });
     element.addEventListener('play', () => {
       playing.value = true;
+      // 真正出声了：那条「待自动续播」的意图已经兑现，清掉它（也让下次拦截能再提示一次）。
+      dropAutoplayIntent();
     });
     element.addEventListener('pause', () => {
       playing.value = false;
+      /*
+       * 暂停时也要收掉「加载中」。
+       *
+       * `waiting`（缓冲）会把 loading 点起来，而清掉它的只有 `playing` —— 一旦在缓冲
+       * 真正出声之前就暂停，`playing` 就永远不会来了，播放键会一直转圈。
+       * 这条路径真实存在：恢复播放现场是「先 play 再立刻 pause」（见一起听的退房收尾），
+       * 以及用户在卡顿时按暂停。
+       */
+      loading.value = false;
     });
     element.addEventListener('waiting', () => {
       loading.value = true;
@@ -330,6 +460,8 @@ export const usePlayerStore = defineStore('player', () => {
       loading.value = false;
     });
     element.addEventListener('ended', () => {
+      // 「一起听」接管时（返回 true）由房间统一切歌，不走本地逻辑。
+      if (endHandler?.()) return;
       if (repeat.value === 'one') {
         element.currentTime = 0;
         void element.play();
@@ -463,6 +595,7 @@ export const usePlayerStore = defineStore('player', () => {
     const source = activeSource.value;
     if (!source) {
       error.value = '该歌曲没有可用的音源';
+      markFailure(track.key, 'unplayable');
       toast.error(error.value);
       return;
     }
@@ -484,6 +617,13 @@ export const usePlayerStore = defineStore('player', () => {
       const result = await musicApi.resolvePlay(source.platform, source.id, quality.value);
       // 这次解析已被更晚的一次切歌取代：交给它落地，别再动音频元素。
       if (token !== loadToken) return;
+      // 上游没给地址（版权/会员限制之外的情况）：当作确定性播不了，让越权判定跳过这首歌。
+      if (!result.url) {
+        error.value = '该歌曲没有可用的播放地址';
+        markFailure(track.key, 'unplayable');
+        toast.error(error.value);
+        return;
+      }
       const element = ensureAudio();
 
       /*
@@ -511,6 +651,8 @@ export const usePlayerStore = defineStore('player', () => {
       element.volume = volume.value;
       element.muted = muted.value;
       trial.value = result.trial;
+      // 只能拿到试听片段：一起听要求两端听同一首，「一方只能听 30 秒」判定为播不了。
+      if (result.trial) markFailure(track.key, 'unplayable');
       /*
        * 记下实际拿到的档位：与用户选的不一致就说明平台降级了（这首歌没这档，或账号没权限）。
        * 用户主动换档引起的那一次，还要当场说清楚原因，别让他以为"选了无损就在听无损"。
@@ -550,9 +692,18 @@ export const usePlayerStore = defineStore('player', () => {
       updateMediaSession(track);
       void useLibraryStore().recordPlay(track);
     } catch (caught) {
+      /*
+       * 自动播放被拦不是失败：不记 error、不弹英文原文、也**不标记「播不了」**
+       * （标记了会让「一起听」把这首当成该全员跳过的歌）。等用户碰一下页面再续上。
+       */
+      if (isAutoplayBlocked(caught)) {
+        noteAutoplayBlocked();
+        return;
+      }
       const message = caught instanceof Error ? caught.message : '播放失败';
       error.value = message;
       playing.value = false;
+      markFailure(track.key, classifyResolveError(caught));
       toast.error(message);
     } finally {
       // 已被更晚的一次加载接手时，这两个状态归它管。
@@ -639,11 +790,18 @@ export const usePlayerStore = defineStore('player', () => {
       void start();
       return;
     }
-    if (element.paused) void element.play();
+    /*
+     * 必须接住 rejection：没有用户交互时 play() 会被拒（NotAllowedError）。
+     * 不接的话既是未处理的 Promise 异常，也会在控制台里刷屏——「一起听」的镜像节拍
+     * 每 200ms 就会重试一次，直到用户碰了页面。
+     */
+    if (element.paused) void element.play().catch(handlePlayRejection);
   }
 
   function pause(): void {
     const element = ensureAudio();
+    // 明确暂停就撤掉「待自动续播」的意图，免得用户点一下页面它又自己响起来。
+    dropAutoplayIntent();
     if (!element.paused) element.pause();
   }
 
@@ -653,7 +811,7 @@ export const usePlayerStore = defineStore('player', () => {
       void start();
       return;
     }
-    if (element.paused) void element.play();
+    if (element.paused) void element.play().catch(handlePlayRejection);
     else element.pause();
   }
 
@@ -817,6 +975,8 @@ export const usePlayerStore = defineStore('player', () => {
     element.load();
     playing.value = false;
     loading.value = false;
+    // 现场都清空了，没什么可续播的。
+    dropAutoplayIntent();
   }
 
   function clearQueue(): void {
@@ -836,6 +996,12 @@ export const usePlayerStore = defineStore('player', () => {
     playing,
     loading,
     error,
+    /** 最近一次播放失败的分类信号：'一起听'据此决定是否全员跳过。 */
+    lastFailure,
+    /** 暂停/恢复落盘：房间期间用它保护用户的个人播放现场。 */
+    setPersistencePaused,
+    /** 接管「一曲播完」：'一起听'用它把换歌交给服务端。 */
+    setEndHandler,
     currentTime,
     duration,
     volume,

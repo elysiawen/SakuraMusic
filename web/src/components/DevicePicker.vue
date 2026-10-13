@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { ConnectDevice } from '@/api/connect';
 import { useConnectStore } from '@/stores/connect';
 import { usePlayerStore } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
 import { useToast } from '@/composables/useToast';
 import { formatDuration } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
@@ -30,7 +31,16 @@ const props = withDefaults(
 
 const connect = useConnectStore();
 const player = usePlayerStore();
+const room = useRoomStore();
 const toast = useToast();
+
+/**
+ * 「一起听」进行中时，「跟随/播到这台」这些会**接管本机播放**的操作必须停用：
+ * 本机此刻是房间的镜像输出，再叠一层设备跟随，两边会互相拉扯。
+ * 遥控**别的设备**（播放/音量/进度）不受影响，那些不碰本机。
+ */
+// 用席位的口径：只是旁观时本机没在放一起听，投送到别的设备完全没问题。
+const roomActive = computed(() => room.seatActive);
 
 const open = ref(false);
 const wrapRef = ref<HTMLElement | null>(null);
@@ -283,6 +293,12 @@ function commitRename(): void {
         <button class="btn device-following-stop" type="button" @click="connect.stopFollowing()">停止</button>
       </div>
 
+      <!-- 一起听进行中：本机是房间的镜像输出，接管本机的设备操作全部停用。 -->
+      <div v-if="roomActive" class="device-following">
+        <AppIcon name="users" :size="13" />
+        <span class="truncate">一起听进行中，设备跟随已暂停</span>
+      </div>
+
       <div v-if="renaming" class="row" style="gap: 6px">
         <input
           v-model="draftName"
@@ -390,8 +406,9 @@ function commitRename(): void {
               v-if="canFollowTarget(device)"
               class="btn device-btn"
               type="button"
+              :disabled="roomActive"
               :class="{ 'is-active': connect.following === device.deviceId }"
-              :title="followHint(device)"
+              :title="roomActive ? '一起听进行中，暂不能跟随设备' : followHint(device)"
               @click="toggleFollow(device)"
             >
               {{ connect.following === device.deviceId ? '停止跟随' : '跟随它' }}
@@ -399,8 +416,9 @@ function commitRename(): void {
             <button
               class="btn device-btn"
               type="button"
+              :disabled="roomActive"
               :class="{ 'is-active': device.state?.following === connect.deviceId }"
-              :title="requestFollowHint(device)"
+              :title="roomActive ? '一起听进行中，暂不能跟随设备' : requestFollowHint(device)"
               @click="toggleRequestFollow(device)"
             >
               跟随我
@@ -409,7 +427,8 @@ function commitRename(): void {
               v-if="canCast(device)"
               class="btn device-btn"
               type="button"
-              :title="castHint(device)"
+              :disabled="roomActive"
+              :title="roomActive ? '一起听进行中，暂不能接管播放' : castHint(device)"
               @click="activate(device)"
             >
               播到这台

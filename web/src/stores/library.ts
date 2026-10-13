@@ -55,7 +55,6 @@ export const useLibraryStore = defineStore('library', () => {
 
   /*
    * 改歌单的名称与/或描述。
-   *
    * 两个字段走的是同一条 PATCH，所以合并成一个入口 —— 拆成两个函数的话，
    * 「一次同时改名称和描述」会变成两次请求，中途还可能只生效一半。
    */

@@ -16,7 +16,6 @@ export const useCredentialStore = defineStore('credential', () => {
   const localItems = ref<LocalCredentialRecord[]>([]);
   const loading = ref(false);
 
-  /** 已绑定的平台 → 存储方式。 */
   const modeByPlatform = computed<Partial<Record<Platform, CredentialMode>>>(() => {
     const map: Partial<Record<Platform, CredentialMode>> = {};
     for (const item of serverItems.value) map[item.platform] = 'server';

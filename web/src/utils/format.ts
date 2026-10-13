@@ -8,6 +8,41 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+/**
+ * 把「一起听了多久」说成人话。
+ *
+ * 与 `formatDuration`（mm:ss，给单曲进度用）不同：这是长期累计的时段，以分钟/小时为主，
+ * 而且要能表达「刚开始」这种 0 附近的状况，不能显示成 0:00。
+ */
+export function formatTogetherDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '刚刚开始';
+  const total = Math.floor(seconds);
+  if (total < 60) return '不到 1 分钟';
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours === 0) return `${minutes} 分钟`;
+  return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分钟`;
+}
+
+/**
+ * 一起听明细里的时间点：日期 + 时刻。
+ *
+ * 与 `formatRelativeTime`（「3 分钟前」）不同：翻明细时要的是**具体哪天**，相对时间反而看不出先后。
+ * 同一年不写年份，跨年的才带上 —— 明细里绝大多数都是今年的。
+ */
+export function formatSessionTime(iso: string): string {
+  const time = new Date(iso);
+  if (Number.isNaN(time.getTime())) return '';
+  const sameYear = time.getFullYear() === new Date().getFullYear();
+  return time.toLocaleString('zh-CN', {
+    ...(sameYear ? {} : { year: 'numeric' }),
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function formatArtists(artists: ArtistRef[]): string {
   return artists.map((item) => item.name).filter(Boolean).join(' / ') || '未知歌手';
 }

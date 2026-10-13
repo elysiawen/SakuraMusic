@@ -12,31 +12,12 @@
  */
 import type { FastifyReply } from 'fastify';
 import { badRequest, notFound } from '../lib/errors';
+import { DAY_MS, readNumber, readString, sanitizeSources, type TrackSnapshot } from './playback';
 
 export type DeviceKind = 'web' | 'android' | 'windows';
 
-/** 曲目的取流坐标（平台 + id）。跟随播放的端要靠它去解析音频地址。 */
-export interface TrackSourceSnapshot {
-  platform: string;
-  id: string;
-  mid?: string;
-  numericId?: string;
-}
+// 曲目快照（TrackSnapshot / TrackSourceSnapshot）与清洗规则见 ./playback —— 「一起听」房间复用同一份。
 
-/** 当前曲目的摘要。带宽敏感，只带展示与取流需要的最小字段。 */
-export interface TrackSnapshot {
-  key: string;
-  title: string;
-  artists: string;
-  album: string;
-  cover: string | null;
-  durationMs: number;
-  /**
-   * 跟着一起上报，而不是让跟随端反过来问：
-   * 少了它，别的设备就算看到「这台在放什么」也放不出来（拿不到 platform + id）。
-   */
-  sources: TrackSourceSnapshot[];
-}
 
 export interface PlaybackSnapshot {
   track: TrackSnapshot | null;
@@ -104,9 +85,6 @@ const MAX_DEVICES_PER_USER = 20;
 const NAME_MAX = 40;
 const DEVICE_ID_MAX = 64;
 const PAYLOAD_MAX = 512 * 1024;
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** 一首歌最多保留几个取流坐标（实际上就 1~2 个，多出来的没有意义）。 */
-const MAX_TRACK_SOURCES = 4;
 
 /**
  * 允许远程执行的指令。白名单而非透传：客户端不该能借用网关发送任意消息。
@@ -129,6 +107,25 @@ const ACTIONS = new Set([
   'transfer',
   'release',
 ]);
+
+/**
+ * 设备上下线钩子。
+ *
+ * `connect` 只管设备连接本身，不该知道「房间」的存在；但房间需要跟着设备的上线/下线走
+ * （重连后自动补推快照、断线后给一段宽限）。所以留这组钩子，由 app 启动时注入 rooms 的实现，
+ * 避免两个服务互相 import 成环。
+ */
+export interface DeviceLifecycleHooks {
+  onOnline?: (userId: string, deviceId: string) => void;
+  /** `silent` = 被同一台设备的新连接顶替，并不是真的离线。 */
+  onOffline?: (userId: string, deviceId: string, silent: boolean) => void;
+}
+
+let lifecycleHooks: DeviceLifecycleHooks = {};
+
+export function setDeviceLifecycleHooks(hooks: DeviceLifecycleHooks): void {
+  lifecycleHooks = hooks;
+}
 
 /** userId → deviceId → 会话。 */
 const registry = new Map<string, Map<string, DeviceSession>>();
@@ -158,37 +155,6 @@ function normalizeName(value: string, kind: DeviceKind): string {
   if (kind === 'android') return 'Android 设备';
   if (kind === 'windows') return 'Windows 设备';
   return '网页端';
-}
-
-function readString(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.slice(0, max) : '';
-}
-
-function readNumber(value: unknown, fallback: number, min: number, max: number): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
-}
-
-/** 清洗曲目的取流坐标。畸形项直接丢掉——宁可少一个音源，也别让跟随端拿到半截坐标。 */
-function sanitizeSources(value: unknown): TrackSourceSnapshot[] {
-  if (!Array.isArray(value)) return [];
-
-  const sources: TrackSourceSnapshot[] = [];
-  for (const item of value.slice(0, MAX_TRACK_SOURCES)) {
-    if (!item || typeof item !== 'object') continue;
-    const raw = item as Record<string, unknown>;
-    const platform = readString(raw.platform, 20);
-    const id = readString(raw.id, 200);
-    if (!platform || !id) continue;
-    sources.push({
-      platform,
-      id,
-      mid: readString(raw.mid, 200) || undefined,
-      numericId: readString(raw.numericId, 200) || undefined,
-    });
-  }
-  return sources;
 }
 
 /**
@@ -336,6 +302,7 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
     if (!raw.writableEnded) raw.end();
     // 被新连接顶替时保持静默：那一帧「离线」是假的。
     if (!silent) broadcast(userId);
+    lifecycleHooks.onOffline?.(userId, deviceId, silent);
   };
 
   live.set(deviceId, session);
@@ -350,6 +317,14 @@ export function attachDevice(reply: FastifyReply, userId: string, input: AttachI
     serverNow: Date.now(),
   });
   broadcast(userId);
+
+  /*
+   * 通知房间：这台设备上线了。
+   *
+   * 放在 hello 之后是有意的——客户端先拿到 deviceId，房间快照随即跟上；
+   * 断线重连时这一步会把房间状态补推过去（成员席位一直留着，无需重新 join）。
+   */
+  lifecycleHooks.onOnline?.(userId, deviceId);
 }
 
 /** 更新某台设备的播放状态并广播。设备不在线时返回 false（不视为错误）。 */
@@ -359,6 +334,31 @@ export function updateState(userId: string, deviceId: string, input: unknown): b
   session.state = sanitizeSnapshot(input);
   broadcast(userId);
   return true;
+}
+
+/**
+ * 往某台设备的 SSE 连接推一个事件。
+ *
+ * 供「一起听」房间等上层功能复用这条连接：设备离线时返回 false（调用方静默跳过即可，
+ * 成员席位与连接是两回事，离线不等于退出房间）。
+ */
+export function sendToDevice(userId: string, deviceId: string, event: string, payload: unknown): boolean {
+  const session = registry.get(userId)?.get(String(deviceId ?? '').trim());
+  if (!session) return false;
+  session.send(event, payload);
+  return true;
+}
+
+/**
+ * 某账号当前在线的设备 id 列表。
+ *
+ * 「一起听」用它把房间推给同账号的**其它**设备：一个账号在房间里只占一个席位
+ * （见 rooms 的 `bindMember`），但账号里别的设备也该看得到自己账号在听什么、
+ * 并把播放接过去。
+ */
+export function listOnlineDeviceIds(userId: string): string[] {
+  const devices = registry.get(userId);
+  return devices ? [...devices.keys()] : [];
 }
 
 /** 把一条控制指令转发给目标设备。 */

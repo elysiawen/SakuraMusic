@@ -50,11 +50,6 @@ const loading = ref(false);
 const createOpen = ref(false);
 const keyword = ref(String(route.query.q ?? ''));
 
-/*
- * 页签与页码直接以 URL 查询串为准，而不是组件内的 ref。
- * 组件在离开路由时会被销毁、ref 回到默认值 —— 那样「搜到第 2 页 → 点进歌手 → 返回」
- * 就会掉回第 1 页，页签也退回「单曲」。放进 URL 后，后退栈里存的就是完整状态。
- */
 const activeType = computed<SearchType>(() => {
   const value = String(route.query.type ?? '');
   return TABS.some((tab) => tab.value === value) ? (value as SearchType) : 'song';

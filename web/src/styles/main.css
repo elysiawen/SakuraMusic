@@ -1096,19 +1096,30 @@ textarea {
 }
 
 /* -------------------------------- 提示 -------------------------------- */
+/*
+ * 横向铺满 + 子项居中，而不是 left:50% + translateX(-50%)。
+ *
+ * 后者在固定定位下的可用宽度只有半屏（left 已经吃掉一半），一句话稍长就被挤成
+ * 两三行的窄条 —— 手机上尤其明显。铺满之后再让每条自己收缩到内容宽度：
+ * 短提示仍是居中的小胶囊，长提示才有整行可用。
+ */
 .toast-host {
   position: fixed;
   top: calc(22px + var(--safe-top));
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
   z-index: 90;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 9px;
+  /* 左右留出与页面对齐的边距，避免长提示贴着屏幕边缘。 */
+  padding: 0 16px;
   pointer-events: none;
 }
 
 .toast {
+  max-width: 100%;
   padding: 10px 18px;
   border-radius: 999px;
   background: var(--surface-strong);
@@ -1116,6 +1127,8 @@ textarea {
   box-shadow: var(--shadow-md);
   font-weight: 600;
   font-size: 13px;
+  /* 换行时居中，胶囊形状才不歪。 */
+  text-align: center;
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
   animation: fade-in 0.24s ease both;

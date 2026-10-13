@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { usePlayerStore } from '@/stores/player';
+import { useTransport } from '@/composables/useTransport';
 import { formatArtists } from '@/utils/format';
 import AddToPlaylistDialog from './AddToPlaylistDialog.vue';
 import AppIcon from './AppIcon.vue';
@@ -12,9 +13,12 @@ import ProgressBar from './ProgressBar.vue';
 import QualityPicker from './QualityPicker.vue';
 import QueueButton from './QueueButton.vue';
 import SourcePicker from './SourcePicker.vue';
+import TogetherButton from './TogetherButton.vue';
 import VolumeControl from './VolumeControl.vue';
 
 const player = usePlayerStore();
+/** 传输控制：在房间里会走房间（服务端权威），否则直接控制本机播放器。 */
+const transport = useTransport();
 /** 「添加到歌单」弹窗。 */
 const addOpen = ref(false);
 </script>
@@ -65,20 +69,20 @@ const addOpen = ref(false);
       <div class="stack player-center" style="gap: 6px">
         <div class="transport">
           <PlayModePicker />
-          <button class="icon-btn transport-skip" type="button" title="上一首" @click="player.prev()">
+          <button class="icon-btn transport-skip" type="button" title="上一首" @click="transport.prev()">
             <AppIcon name="prev" :size="21" filled />
           </button>
           <button
             class="play-btn"
             type="button"
             :title="player.playing ? '暂停（空格）' : '播放（空格）'"
-            @click="player.toggle()"
+            @click="transport.toggle()"
           >
             <AppIcon v-if="player.loading" name="refresh" :size="20" class="spin" />
             <AppIcon v-else-if="player.playing" name="pause" :size="20" filled />
             <AppIcon v-else name="play" :size="20" filled />
           </button>
-          <button class="icon-btn transport-skip" type="button" title="下一首" @click="player.next()">
+          <button class="icon-btn transport-skip" type="button" title="下一首" @click="transport.next()">
             <AppIcon name="next" :size="21" filled />
           </button>
           <!-- 音量：与左侧的模式按钮对称，滑杆悬停时从上方浮出 -->
@@ -121,6 +125,8 @@ const addOpen = ref(false);
         <QualityPicker />
 
         <QueueButton />
+
+        <TogetherButton />
 
         <DevicePicker />
 

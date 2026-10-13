@@ -200,6 +200,24 @@ export async function changePassword(
   await execute('delete from sessions where user_id = $1', [userId]);
 }
 
+/**
+ * 删除账户及其**全部数据**。
+ *
+ * 先验证密码（防误删，也防止别人拿到会话后直接删号），再删。
+ * 用户表下几乎所有表都带了 `on delete cascade`（见 `db/schema.ts`）：
+ * 会话、第三方凭据、歌单（连带歌单曲目）、收藏、播放历史、一起听累计与明细 ——
+ * 删掉 users 这一行就全部级联清空，不需要逐表删。
+ * 一起听那张「用户对」表也如此：删掉我，与别人共有的累计/明细一并消失（本来就是我的数据）。
+ */
+export async function deleteAccount(userId: string, password: string): Promise<void> {
+  const user = await one<UserRow>('select * from users where id = $1', [userId]);
+  if (!user) throw notFound('用户不存在');
+  if (!(await verifyPassword(String(password ?? ''), user.password_hash))) {
+    throw badRequest('密码不正确', 'invalid_password');
+  }
+  await execute('delete from users where id = $1', [userId]);
+}
+
 /** 统计信息，用于设置页展示。 */
 export async function userStats(userId: string): Promise<{
   playlists: number;

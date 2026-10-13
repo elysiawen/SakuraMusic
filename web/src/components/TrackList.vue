@@ -2,8 +2,10 @@
 import { onMounted, ref } from 'vue';
 import type { Platform, UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
+import { useTransport } from '@/composables/useTransport';
 import { useLibraryStore } from '@/stores/library';
 import { usePlayerStore } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
 import { formatDuration } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
 import AddToPlaylistDialog from './AddToPlaylistDialog.vue';
@@ -26,15 +28,18 @@ const emit = defineEmits<{ (event: 'removed'): void }>();
 
 const player = usePlayerStore();
 const library = useLibraryStore();
+const room = useRoomStore();
 const toast = useToast();
+/** 传输控制：在房间里点歌会走房间（点歌并播放），否则替换本机队列。 */
+const transport = useTransport();
 
 const dialogTrack = ref<UnifiedTrack | null>(null);
 
 const isCurrent = (track: UnifiedTrack): boolean => player.current?.key === track.key;
 
-/** 点击行：播放这首歌，并把当前列表作为播放队列。 */
-async function play(track: UnifiedTrack): Promise<void> {
-  await player.playTrack(track, props.tracks);
+/** 点击行：播放这首歌（房间里 = 点歌并播放），并把当前列表作为队列。 */
+function play(track: UnifiedTrack): void {
+  transport.playTrack(track, props.tracks);
 }
 
 /**
@@ -175,8 +180,13 @@ function activeSourcePlatform(track: UnifiedTrack): Platform {
         <button class="icon-btn" type="button" title="添加到歌单" @click.stop="dialogTrack = track">
           <AppIcon name="list-plus" :size="16" />
         </button>
-        <button class="icon-btn" type="button" title="加入播放队列" @click.stop="player.addToQueue(track)">
-          <AppIcon name="plus" :size="16" />
+        <button
+          class="icon-btn"
+          type="button"
+          :title="room.seatActive ? '加入一起听队列' : '加入播放队列'"
+          @click.stop="transport.addToQueue(track)"
+        >
+          <AppIcon :name="room.seatActive ? 'users' : 'plus'" :size="16" />
         </button>
         <button
           v-if="removableFrom"
