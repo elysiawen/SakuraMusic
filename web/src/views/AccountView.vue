@@ -11,7 +11,7 @@ import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
-import { avatarGradient, formatRelativeTime, formatTogetherDuration } from '@/utils/format';
+import { avatarGradient, formatRelativeTime, formatTogetherDuration, formatVipLabel } from '@/utils/format';
 
 /**
  * 账户中心：只放「身份」相关的内容——Sakura 账号资料、密码，
@@ -107,6 +107,21 @@ const LOGIN_LABEL: Record<'qq' | 'wx', string> = { qq: 'QQ 登录', wx: '微信�
 function loginLabel(platform: Platform): string {
   const login = profileOf(platform)?.login;
   return login ? LOGIN_LABEL[login] : '';
+}
+
+/**
+ * 昵称旁边的会员标识：`vip` 决定显不显示，`vipLabel`（上游字段名，ASCII）决定显示哪一档，
+ * 具体的中文文案在 `formatVipLabel` 那张表里。
+ *
+ * 注意与歌曲列表里的「VIP」角标区分：那个来自单曲 `pay.pay_play`（这首歌要不要会员），
+ * 这个是账号级的（这个账号是不是会员、是哪档），网易云读 `vipType`、QQ 音乐读 `get_vip_info`。
+ * 上游没给（`vip` 缺省）时不显示 —— 「不知道」不是「不是会员」；给了 `vip` 但没给 `vipLabel`
+ * （旧数据，或档位查询失败）时显示通用的「会员」——知道是会员、但不知道哪一档。
+ */
+function vipLabel(platform: Platform): string {
+  const profile = profileOf(platform);
+  if (!profile?.vip) return '';
+  return formatVipLabel(platform, profile.vipLabel);
 }
 
 const avatarPresets = computed(() => [
@@ -400,6 +415,9 @@ async function onBound(): Promise<void> {
                 </span>
                 <span v-if="loginLabel(platform)" class="tag" style="color: var(--text-soft); flex: none">
                   {{ loginLabel(platform) }}
+                </span>
+                <span v-if="vipLabel(platform)" class="tag" style="color: var(--brand-600); flex: none">
+                  {{ vipLabel(platform) }}
                 </span>
               </div>
             </div>

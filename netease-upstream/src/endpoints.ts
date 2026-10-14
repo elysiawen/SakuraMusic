@@ -62,4 +62,13 @@ export const ENDPOINTS: Endpoint[] = [
   { path: '/simi/song', fn: 'simi_song', params: ['id', 'limit', 'offset'], note: '相似歌曲（“喜欢这首歌的人也听”）' },
   { path: '/simi/playlist', fn: 'simi_playlist', params: ['id', 'limit', 'offset'], note: '包含这首歌的歌单' },
   { path: '/user/record', fn: 'user_record', params: ['uid', 'type'], note: '听歌排行（type 0 本周 / 1 历史，需登录）' },
+  {
+    path: '/vip/info',
+    fn: 'vip_info',
+    params: ['uid'],
+    note:
+      '会员信息。**没被网关用上**：`redVipLevel` 是「红VIP等级」不是档位（官方文档的用词，且实测见过 7），' +
+      '产品块 `associator` / `musicPackage` 的 `vipCode` / `vipLevel` 才是「VIP 类型」，' +
+      '但官方没给枚举表、社区说法自相矛盾 —— 没有可靠依据就不猜档位，见 docs/API.md',
+  },
 ];

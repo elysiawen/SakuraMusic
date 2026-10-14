@@ -12,6 +12,17 @@
 
 ## 最近更新
 
+> **2026-10-14** —— **`AccountProfile` 多了账号级会员标识**（`vip` + `vipLabel`）：
+>
+> - 绑定、凭据列表、刷新、状态这些接口返回的 `profile` 里，现在会带上「**这个账号**是不是会员、
+>   是哪一档」。`vipLabel` 是 **ASCII 标识、不本地化**（取值就是点亮的上游字段名：QQ 音乐
+>   `vip` / `svip` / `huge_vip`；**网易云暂不发**，上游给不出可靠档位），显示成什么由客户端
+>   自己映射（本仓库 web 见 `formatVipLabel`）→ [§2 数据类型](#2-数据类型)、
+>   [3.3 第三方账号绑定与凭据](#33-第三方账号绑定与凭据)
+> - 别跟**曲目上的** `vip`（那首歌是否付费/会员专享）混了，那是另一个字段、另一套语义。
+> - 老的凭据里没有这两个字段，要调一次 `POST /api/credentials/:platform/refresh` 才会带上
+>   （会员信息是在**绑定**与**刷新凭据**时写进 `profile` 的）。
+
 > **2026-10-12（其二）** —— 两点更正/变更，都跟 QQ 上游有关：
 >
 > - **微信扫码不再"不可用"**：实测当前这类凭据是被 QQ 承认的（`check_expired` 为 False、免费曲目取地址
@@ -301,9 +312,45 @@ X-Sakura-Credential: <base64url(JSON)>
 **`AccountProfile`**（第三方平台账号资料）
 
 ```json
-{ "nickname": "Sakura", "avatar": "https://...jpg", "userId": "1580115937", "vip": true }
+{
+  "nickname": "Sakura",
+  "avatar": "https://...jpg",
+  "userId": "1580115937",
+  "vip": true,
+  "vipLabel": "huge_vip"
+}
 ```
 
+> `vip` 是**账号**级别的「是不是会员」，与曲目上的 `vip`（那首歌是否付费/会员专享）不是一回事。
+> `vipLabel` 是会员档位**标识**：**ASCII、不本地化**，取值就是上游的字段名（接口里不放展示文案，
+> 显示成什么由客户端决定）：
+
+| 平台 | 取值 | 对应（点亮的是哪个上游标志） |
+|---|---|---|
+| QQ 音乐 | `vip` | 绿钻（`identity.vip`） |
+| QQ 音乐 | `svip` | 豪华绿钻（顶层 `svip`，或 `identity.eight` 那个「豪华绿钻·八平台」形态） |
+| QQ 音乐 | `huge_vip` | 超级会员（`identity.huge_vip`） |
+| 网易云 | —— | **不发 `vipLabel`**，见下 |
+
+> ⚠️ **QQ 的字段名和产品名是反的**：`huge_vip` 是**超级会员**（不是"豪华"），`svip` 才是**豪华绿钻**。
+> 别照名字理解，也别"顺手修"——这是拿真实账号核对出来的：该账号 `identity.huge_vip_end` 正是
+> 其**超级会员**的到期日、`identity.eight_end` 正是 App 里**豪华绿钻**的到期日，两个日期一一对上。
+> （SDK 自己的注释在这点上是错的，它另一处 `sound_power.py` 的说法反而与实测一致。）
+>
+> 优先级从高到低：超级会员 > 豪华绿钻 > 绿钻 —— 高等级会把低等级的标志一并点亮。
+>
+> **网易云为什么没有档位**（只给 `vip` 布尔值）：
+> `login/status` 的 `vipType` 是个编码（实测 110），没有公开取值表；`/vip/info` 的 `redVipLevel`
+> 是**等级**不是档位 —— 网易云官方文档里它就叫「红 VIP 等级」（且不给取值表），实测还见过 `7`
+> 这种值，1/2 档位说不通；真正表示「VIP 类型」的是响应里那些产品块（`associator` / `musicPackage`
+> 自带的 `vipCode` / `vipLevel`），但官方**没有公开 `type` / `vipCode` 的枚举表**，社区流传的说法
+> 拿真实数据一对就不成立。没有可靠依据就不猜 —— 网易云会员统一显示通用的「会员」。
+> 将来要补：要么拿到官方枚举，要么用已知档位的账号做标定（`netease-upstream` 的 `endpoints.ts`
+> 里留着 `/vip/info`，标定完成后把它接上即可）。
+>
+> 两者缺省都表示**上游没给出**（未绑定、查询失败等）——此时界面不要显示任何会员标识；
+> `vip` 为 `true` 而 `vipLabel` 缺省时（旧数据，或档位查询失败），客户端显示通用的「会员」。
+>
 > `avatar` **以上游返回的为准**：QQ 音乐的主页接口会直接给一个头像地址（QQ 号账号给 QQ 头像，
 > 微信登录的账号给微信头像），客户端**不要自己拼 qlogo 去覆盖它**。
 > QQ 音乐侧 `userId` 是 **QQ 号**（即凭据里的 `musicid`），只在**上游没给头像**时用来兜底：
@@ -452,6 +499,14 @@ POST /api/bind/start  →  拿到二维码图与 identifier
 GET  /api/bind/poll   →  轮询直到 status=success，拿到 ticket 与 profile
 POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 ```
+
+> 本节各接口返回的 `profile` 就是 [§2](#2-数据类型) 的 `AccountProfile`，**账号级会员标识就在里面**：
+> `vip: boolean?`（是不是会员）+ `vipLabel: string?`（哪一档，ASCII 标识，取值见 §2 那张表）。
+> 客户端的渲染规则：`vip !== true` → 不显示任何会员标识；`vip === true` → 按平台把 `vipLabel`
+> 映射成自己的文案（本仓库的 web 见 `formatVipLabel`），`vipLabel` 缺省时显示通用的「会员」
+> （表示"是会员，但不知道哪一档"）。
+> 会员信息是在**绑定**与**刷新凭据**时写进 `profile` 的，所以这个字段上线前绑的账号
+> 要先调一次 `POST /api/credentials/:platform/refresh` 才会带上。
 
 #### `POST /api/bind/start` — 开始扫码
 

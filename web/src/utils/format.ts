@@ -1,4 +1,4 @@
-import type { ArtistRef } from '@/api/types';
+import type { ArtistRef, Platform } from '@/api/types';
 
 export function formatDuration(ms: number): string {
   if (!ms || ms < 0) return '--:--';
@@ -77,6 +77,37 @@ export function avatarGradient(seed: string): string {
   const from = `hsl(${hash}, 78%, 72%)`;
   const to = `hsl(${(hash + 48) % 360}, 74%, 62%)`;
   return `linear-gradient(135deg, ${from}, ${to})`;
+}
+
+/**
+ * 会员档位标识 → 界面文案。
+ *
+ * 网关发的 `vipLabel` 是**上游字段名**（ASCII，不本地化，接口里不塞展示文案），
+ * 所以中文只出现在这里 —— 要改叫法、要出英文版，都只动这张表：
+ *   QQ 音乐  `vip` → 绿钻、`svip` → 豪华绿钻、`huge_vip` → 超级会员
+ *
+ * ⚠️ **QQ 那三行看着别扭，但别"顺手修"**：QQ 的字段名和产品名是反的 ——
+ * `huge_vip`（名字像"豪华"）实际是**超级会员**，`svip` 才是**豪华绿钻**。
+ * 这是拿真实账号核对过的（`huge_vip_end` 与其超级会员到期日、`eight_end` 与 App 里
+ * 豪华绿钻到期日一一对上），原因与证据写在 `gateway/src/upstream/qq.ts` 那段注释里。
+ *
+ * **网易云不查这张表**：上游给不出可靠的档位（`redVipLevel` 是「红VIP等级」不是档位，
+ * 产品编码 `vipCode` 又没有官方枚举表），所以网关干脆不发 `vipLabel` —— 既然只知道
+ * 「是不是会员」，就统一显示 `VIP`，不假装知道哪一档。依据见
+ * `gateway/src/upstream/netease.ts` 与 docs/API.md。
+ *
+ * 同一个标识在两个平台含义不同（都是 `vip`，一边是绿钻、一边是黑胶VIP），
+ * 所以必须按平台查。QQ 侧认不出来的标识、以及旧数据里没有标识的，退到通用的「会员」——
+ * 「是会员但不知道哪一档」，比空着或不显示都准。
+ */
+const VIP_LABEL_TEXT: Record<Platform, Record<string, string>> = {
+  qq: { vip: '绿钻', svip: '豪华绿钻', huge_vip: '超级会员' },
+  netease: {},
+};
+
+export function formatVipLabel(platform: Platform, vipLabel: string | undefined): string {
+  if (platform === 'netease') return 'VIP';
+  return (vipLabel && VIP_LABEL_TEXT[platform][vipLabel]) || '会员';
 }
 
 

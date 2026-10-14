@@ -10,6 +10,7 @@ import {
 } from '@/api/types';
 import { useToast } from '@/composables/useToast';
 import { useCredentialStore } from '@/stores/credential';
+import { formatVipLabel } from '@/utils/format';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{ platform: Platform | null }>();
@@ -312,8 +313,14 @@ onBeforeUnmount(() => {
               <img v-if="profile?.avatar" :src="profile.avatar" alt="" />
               <template v-else>{{ (profile?.nickname ?? 'S').slice(0, 1) }}</template>
             </span>
-            <div class="stack" style="gap: 2px">
-              <strong>{{ profile?.nickname ?? platformLabel + ' 用户' }}</strong>
+            <div class="stack" style="gap: 2px; min-width: 0">
+              <div class="row" style="gap: 6px; min-width: 0">
+                <strong class="truncate">{{ profile?.nickname ?? platformLabel + ' 用户' }}</strong>
+                <!-- 账号级会员标识（QQ 音乐来自 user.get_vip_info，网易云来自 /vip/info 的 redVipLevel），绑定成功时即可见 -->
+                <span v-if="profile?.vip && platform" class="tag" style="color: var(--brand-600); flex: none">
+                  {{ formatVipLabel(platform, profile.vipLabel) }}
+                </span>
+              </div>
               <span class="muted" style="font-size: 12px">
                 {{ platformLabel }}登录成功，请选择凭据保存在哪里
               </span>

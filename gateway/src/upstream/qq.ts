@@ -725,36 +725,86 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
     login: qqLoginKind(raw),
   };
 
-  if (!encryptUin) return base;
+  let profile = base;
+  if (encryptUin) {
+    try {
+      const data = asObj(
+        unwrap(
+          await upstreamJson<RawResponse>(BASE, `/user/${encodeURIComponent(encryptUin)}/homepage`, { cookie }),
+          `/user/${encryptUin}/homepage`,
+        ),
+      );
+      /*
+       * 昵称与头像在 `base_info` 里：这个接口返回的是 `{ base_info, singer, is_followed, tab_detail }`，
+       * 并没有 `header` 这一层。以前按 `data.header` 找，取不到就退化读顶层，于是 `nick` / `logo`
+       * 全部落空，用户永远看到「QQ 音乐用户 <QQ号>」——现在按真实契约读。
+       *
+       * 字段名以 SDK 模型为准（App 里只有这两个，没有别的别名）：
+       *   class UserHomepageBaseInfo: EncryptedUin / Name / **Avatar** / BackgroundImage / UserType
+       * 所以这里不再并列 `nick` / `nickname` / `logo` / `headurl` / `pic` 那些猜出来的名字 ——
+       * 它们永远不会命中，摆着只会让人误以为上游给了多个候选字段。
+       *
+       * 会员信息也不在此接口内 —— 但**能**从单独的 `user.get_vip_info` 拿到，见下面一段。
+       */
+      const info = asObj(data.base_info ?? data);
+      profile = {
+        nickname: firstStr(info.name, base.nickname),
+        avatar: firstStr(info.avatar) || undefined,
+        userId: musicid || undefined,
+        login: base.login,
+      };
+    } catch {
+      /* 主页失败不挡住下面的会员查询：昵称可以缺，会员标识也一样能显示。 */
+    }
+  }
+
+  /*
+   * 账号级会员状态：单独的 `user.get_vip_info` 接口（网关读 `/user/vip_info`）。
+   *
+   * 它与歌曲列表里的「VIP」角标是两回事 —— 那个来自单曲 `pay.pay_play`，只回答
+   * 「这首歌要不要会员」；这里回答「这个账号是不是会员、是哪一档」，网易云侧同源逻辑读的是
+   * `profile.vipType`。
+   *
+   * 查询失败时**留空不填**：「查不到」和「不是会员」必须分得开，硬填 false 会让
+   * 会员账号因为一次网络抖动在界面上「变成」非会员。
+   */
   try {
     const data = asObj(
-      unwrap(
-        await upstreamJson<RawResponse>(BASE, `/user/${encodeURIComponent(encryptUin)}/homepage`, { cookie }),
-        `/user/${encryptUin}/homepage`,
-      ),
+      unwrap(await upstreamJson<RawResponse>(BASE, '/user/vip_info', { cookie }), '/user/vip_info'),
     );
     /*
-     * 昵称与头像在 `base_info` 里：这个接口返回的是 `{ base_info, singer, is_followed, tab_detail }`，
-     * 并没有 `header` 这一层。以前按 `data.header` 找，取不到就退化读顶层，于是 `nick` / `logo`
-     * 全部落空，用户永远看到「QQ 音乐用户 <QQ号>」——现在按真实契约读。
+     * 档位怎么判：**以实测为准，不照抄 SDK 注释 —— QQ 的字段名和产品名是反的。**
      *
-     * 字段名以 SDK 模型为准（App 里只有这两个，没有别的别名）：
-     *   class UserHomepageBaseInfo: EncryptedUin / Name / **Avatar** / BackgroundImage / UserType
-     * 所以这里不再并列 `nick` / `nickname` / `logo` / `headurl` / `pic` 那些猜出来的名字 ——
-     * 它们永远不会命中，摆着只会让人误以为上游给了多个候选字段。
+     * SDK 的注释本身自相矛盾：`models/user.py` 说 `huge_vip` = 豪华绿钻、`svip` = 超级会员，
+     * 而同一份 SDK 的 `models/sound_power.py` 又把 `huge_vip` 注释成「超级会员加成」。
      *
-     * 另外这里**不再报 `vip`**：会员信息不在此接口内，硬填 false 等于把「不知道」说成「不是会员」。
+     * 实测一个账号（App 里「豪华绿钻: 2026/11/12 到期」，超级会员已于 2026-08-30 过期）：
+     *   `identity.huge_vip_end = 2026-08-30 07:53` ← **正是那个超级会员的到期日**
+     *   `identity.eight_end    = 2026-11-12`       ← **正是 App 里豪华绿钻的到期日**
+     * 两个日期一一对上，字段归属因此确定：
+     *   `identity.huge_vip`        = 超级会员（不是「豪华绿钻」，名字是历史包袱）
+     *   `svip` / `identity.eight`  = 豪华绿钻（`eight` 是「豪华绿钻·八平台」这种套餐形态，
+     *                                到期日与豪华绿钻同一天）
+     *   `identity.vip`             = 绿钻（基础档，包含在豪华绿钻里）
+     *
+     * 顺序从高到低：超级会员包含豪华绿钻，它多半也会把 `svip` 点亮，先判豪华绿钻的话
+     * 超级会员会被降一档显示 —— 上一版就是这么错的（把豪华绿钻说成了超级会员）。
+     *
+     * 分组名（`identity` / `svip` 在顶层）**只活在这一层**：对外（`/api/credentials` 那些接口）
+     * 我们只发 `vip: boolean` 与 `vipLabel: string`；`vipLabel` 取值是「点亮的是哪个字段」，
+     * 不本地化 —— 字段名与产品名的对应关系由客户端查表（见 web 的 `formatVipLabel`）。
      */
-    const info = asObj(data.base_info ?? data);
-    return {
-      nickname: firstStr(info.name, base.nickname),
-      avatar: firstStr(info.avatar) || undefined,
-      userId: musicid || undefined,
-      login: base.login,
-    };
+    const identity = asObj(data.identity);
+    const greenVip = num(identity.vip) > 0; // 绿钻
+    const diamondVip = num(data.svip) > 0 || num(identity.eight) > 0; // 豪华绿钻
+    const superVip = num(identity.huge_vip) > 0; // 超级会员
+    profile.vip = greenVip || diamondVip || superVip;
+    profile.vipLabel = superVip ? 'huge_vip' : diamondVip ? 'svip' : greenVip ? 'vip' : undefined;
   } catch {
-    return base;
+    /* 会员信息查不到就留空，界面不显示标识，不影响其余资料。 */
   }
+
+  return profile;
 }
 
 /* ------------------------------ 扫码登录 ------------------------------ */

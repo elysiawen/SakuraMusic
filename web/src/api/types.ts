@@ -84,7 +84,14 @@ export interface AccountProfile {
   nickname: string;
   avatar?: string;
   userId?: string;
+  /** 账号整体是否为会员；缺省表示上游未给出，界面不显示标识。 */
   vip?: boolean;
+  /**
+   * 会员档位标识（ASCII，取值是「点亮的上游字段名」）：QQ 音乐 `vip`（绿钻）/
+   * `svip`（豪华绿钻）/ `huge_vip`（超级会员，字段名是历史包袱）。
+   * 网易云目前一律不填（上游给不出可靠档位）。展示文案由客户端映射（见 `formatVipLabel`）。
+   */
+  vipLabel?: string;
   /** 凭据是哪种登录拿到的（`wx` = 微信扫码，`qq` = QQ 扫码），界面上标在昵称旁。 */
   login?: 'qq' | 'wx';
 }

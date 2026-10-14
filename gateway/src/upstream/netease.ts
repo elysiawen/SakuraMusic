@@ -564,6 +564,20 @@ export async function loginProfile(cookie: string | null): Promise<AccountProfil
     nickname: firstStr(profile.nickname, '网易云用户'),
     avatar: firstImage(profile.avatarUrl),
     userId: str(profile.userId) || undefined,
+    /*
+     * 只判「是不是会员」，**不出档位**（`vipLabel` 一律留空）。
+     *
+     * 试过、也查过资料，结论是上游给不了可靠的档位：
+     *   · `/login/status` 的 `vipType` 只是个编码（实测值 110，不是布尔），没有公开的取值表；
+     *   · `/vip/info` 的 `redVipLevel` 是**等级**不是档位 —— 网易云官方文档里它就叫
+     *     「红 VIP 等级」（无取值表），实测还见过 7 这种值，1/2 档位说不通；
+     *   · 同响应里的产品块（`associator` / `musicPackage` 各带 `vipCode` / `vipLevel`）
+     *     才是真正的「VIP 类型」，但官方没给 `type` / `vipCode` 的枚举表，社区流传的说法
+     *     自相矛盾（拿真实数据一对就不成立），属于不能硬编码的东西。
+     *
+     * 所以这里**宁可不出档位**：界面显示通用的「会员」，好过显示错的黑胶VIP/黑胶SVIP。
+     * 真要补，得先拿到官方 `type` 枚举，或用已知档位的账号做标定 —— 见 docs/API.md。
+     */
     vip: num(profile.vipType) > 0,
   };
 }

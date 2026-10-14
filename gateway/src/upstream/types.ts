@@ -167,7 +167,22 @@ export interface AccountProfile {
   nickname: string;
   avatar?: string;
   userId?: string;
+  /**
+   * 账号整体是否为会员（区别于单曲的付费标识 `UnifiedTrack.vip`）。
+   * 缺省表示「不知道」——上游没给或查询失败，此时界面不应显示任何会员标识。
+   */
   vip?: boolean;
+  /**
+   * 会员档位标识（**ASCII，不本地化**，取值是「点亮的是哪个上游字段」）：
+   * QQ 音乐 `vip`（绿钻）/ `svip`（豪华绿钻）/ `huge_vip`（超级会员）—— **注意 QQ 的
+   * `huge_vip` 是超级会员、`svip` 是豪华绿钻**，字段名与产品名反着，原因见 `qq.ts`。
+   *
+   * **网易云一律不填**：上游给不出可靠的档位（详见 `netease.ts` 里那段说明）。
+   *
+   * 接口只给标识、不给展示文案 —— 显示成什么由客户端决定（本仓库的 web 见 `formatVipLabel`）。
+   * 仅当 `vip` 为 `true` 时可能出现；缺省表示「只知道是会员、不知道哪一档」。
+   */
+  vipLabel?: string;
   /**
    * 这份凭据是哪种登录拿到的（`wx` = 微信扫码，`qq` = QQ 扫码）。
    * 只有 QQ 音乐有两种登录方式，且两者的坑完全不同，所以值得在界面上标出来。
