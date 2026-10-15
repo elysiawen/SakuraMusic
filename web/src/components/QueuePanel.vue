@@ -88,9 +88,13 @@ watch(
         <CoverArt :src="track.album.cover" :size="34" radius="9px" :seed="track.title" :alt="track.title" />
 
         <div class="stack" style="min-width: 0; gap: 1px">
-          <span class="truncate" style="font-weight: 620; font-size: 13px" :title="track.title">
-            {{ track.title }}
-          </span>
+          <!-- 歌名与会员角标同一行：标题自己截断，角标不被压缩（见 .queue-title / .queue-vip）。 -->
+          <div class="queue-title">
+            <span class="truncate" style="font-weight: 620; font-size: 13px" :title="track.title">
+              {{ track.title }}
+            </span>
+            <span v-if="track.vip" class="tag queue-vip">VIP</span>
+          </div>
           <span class="muted truncate" style="font-size: 11.5px">{{ formatArtists(track.artists) }}</span>
         </div>
 
@@ -188,6 +192,23 @@ watch(
   color: var(--text-mute);
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 歌名 + 会员角标。面板最窄时（390px 屏）这一列只有 200 出头，
+ * 所以角标 `flex: none` 不让压缩，宽度不够时由歌名去截断 ——
+ * 否则长标题会把「VIP」挤扁或顶到下一行。
+ */
+.queue-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.queue-vip {
+  color: var(--brand-600);
+  flex: none;
 }
 
 .queue-duration {

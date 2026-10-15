@@ -242,6 +242,7 @@ export const useRoomStore = defineStore('room', () => {
       album: { name: track.album, cover: track.cover ?? undefined },
       durationMs: track.durationMs,
       sources: track.sources,
+      vip: track.vip,
     };
   }
 

@@ -213,6 +213,8 @@ export const useConnectStore = defineStore('connect', () => {
             durationMs: track.durationMs,
             // 取流坐标必须带上：别的设备要靠它才能把这首放出来（跟随播放）。
             sources: track.sources,
+            // 会员角标跟着一起走：跟随端不会去补单曲详情，丢了就永远显不出来。
+            vip: track.vip,
           }
         : null,
       playing: player.playing,
@@ -663,6 +665,7 @@ export const useConnectStore = defineStore('connect', () => {
           album: { name: state.track.album, cover: state.track.cover ?? undefined },
           durationMs: state.track.durationMs,
           sources: state.track.sources,
+          vip: state.track.vip,
         });
         const at = positionOf(state);
         if (at > 0.5) player.seek(at);

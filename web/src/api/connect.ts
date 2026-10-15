@@ -20,6 +20,8 @@ export interface ConnectTrackSnapshot {
   cover: string | null;
   durationMs: number;
   sources: ConnectTrackSource[];
+  /** 这首歌是否需要会员；缺省 = 不需要（跟随时本机队列也要显这个角标）。 */
+  vip?: boolean;
 }
 
 export interface ConnectPlaybackState {

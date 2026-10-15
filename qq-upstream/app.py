@@ -25,10 +25,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 # 绝对导入：uvicorn 以顶层模块（`app:create_app`）加载本文件，
 # 包内的相对导入会因为没有父包而失败；服务目录由 run.py 放进 sys.path。
 from cache import response_cache
+from compat import apply_snapshot_payload_patch
 from envelope import fail, status_for
 from mobile import mobile_sessions
 from routes import album, login, mobile, recommend, search, singer, song, songlist, top, user
 from session import qr_sessions
+
+# 必须在**任何请求之前**打上，否则手机 QQ 扫码的轮询会被空值 Cookie 炸成 500（见 compat.py）。
+# 放在模块级而不是 create_app 里：uvicorn 加载本模块就会执行，不必等应用装配。
+apply_snapshot_payload_patch()
 
 
 @asynccontextmanager

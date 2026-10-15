@@ -27,6 +27,13 @@ export interface TrackSnapshot {
    * 少了它，别的端就算看到「在放什么」也放不出来（拿不到 platform + id）。
    */
   sources: TrackSourceSnapshot[];
+  /**
+   * 这首歌是否需要会员（网易云 `fee`、QQ 音乐 `pay.pay_play`）。
+   *
+   * **只在确实需要时才带上**：缺省与 `false` 等价，客户端按「不需要」处理（队列面板据此
+   * 决定显不显那个小角标）。它只回答「这首歌有付费门槛」，与账号是不是会员无关。
+   */
+  vip?: boolean;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -115,6 +122,8 @@ export function sanitizeTrack(input: unknown): TrackSnapshot | null {
     cover,
     durationMs: readNumber(raw.durationMs, 0, 0, DAY_MS),
     sources: sanitizeSources(raw.sources),
+    // 与 `mid` 那些可选字段同一种写法：不需要会员时不带这个键，快照因此不会被撑大。
+    vip: raw.vip === true ? true : undefined,
   };
 }
 

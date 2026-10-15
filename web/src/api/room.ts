@@ -31,6 +31,8 @@ export interface RoomTrack {
   durationMs: number;
   /** 取流坐标：镜像端靠它把这首放出来。 */
   sources: { platform: Platform; id: string; mid?: string; numericId?: string }[];
+  /** 这首歌是否需要会员；缺省 = 不需要（队列面板据此显角标）。 */
+  vip?: boolean;
 }
 
 export interface RoomMember {
