@@ -8,6 +8,7 @@ import {
   type RoomKind,
   type RoomLostReason,
   type RoomMember,
+  type RoomMode,
   type RoomPlayback,
   type RoomTrack,
   type RoomView,
@@ -17,7 +18,7 @@ import { useToast } from '@/composables/useToast';
 import { livePosition, SYNC_SEEK_S, SYNC_TRIM_S, TRIM_RATE } from '@/utils/sync';
 import { useAuthStore } from './auth';
 import { useConnectStore } from './connect';
-import { usePlayerStore } from './player';
+import { usePlayerStore, type PlayMode } from './player';
 
 type PlayerStore = ReturnType<typeof usePlayerStore>;
 
@@ -74,6 +75,8 @@ interface PersonalSnapshot {
   index: number;
   position: number;
   playing: boolean;
+  /** 房间的播放模式是共享的，会盖掉本机模式；退出时把它还回去。 */
+  mode: PlayMode;
 }
 
 /**
@@ -302,6 +305,16 @@ export const useRoomStore = defineStore('room', () => {
   function setQueue(list: UnifiedTrack[], startIndex = 0): void {
     void act('setQueue', { queue: list, index: startIndex });
   }
+  /**
+   * 改播放模式（**房间共享**，两端一起变）。
+   *
+   * 必须走 action 上报而不是只改本机：房间里「自然播完往哪走」是由服务端按房间模式决定的
+   * （`ended` → `advanceAfterEnd`），只改本机的话播完时本机和服务端各按各的走，两端就岔开了。
+   * 上报后服务端会随下一帧 `room-playback` 把模式广播回来，两端一并生效。
+   */
+  function setMode(mode: RoomMode): void {
+    void act('setMode', { mode });
+  }
 
   // ---- 把本地播放器镜像到房间状态 ----
 
@@ -407,6 +420,7 @@ export const useRoomStore = defineStore('room', () => {
       index: player.index,
       position: player.currentTime,
       playing: player.playing,
+      mode: player.playMode,
     };
     /*
      * 立刻暂停落盘——必须在这里，而不是等 enterRoom。
@@ -424,6 +438,8 @@ export const useRoomStore = defineStore('room', () => {
     player.setPersistencePaused(false);
     // 没有现场可恢复（例如刷新后重进房间）：保持播放器现状，别乱动。
     if (!saved) return;
+    // 模式先还原：它在房间期间被房间盖过，与有没有个人队列无关。
+    player.setPlayMode(saved.mode);
     // 入房前本来就是空的：把被房间接管的队列清掉，而不是留着房间队列。
     if (saved.queue.length === 0) {
       player.clearQueue();
@@ -610,6 +626,7 @@ export const useRoomStore = defineStore('room', () => {
       positionAt: payload.positionAt,
       duration: payload.duration,
       track: payload.track,
+      mode: payload.mode,
       skipReason: payload.skipReason,
       skippedTitle: payload.skippedTitle,
     };
@@ -617,6 +634,13 @@ export const useRoomStore = defineStore('room', () => {
 
     // 旁观：看得到房间在放什么，但那与本机播放器无关，连「播不了」的提示都不该弹。
     if (spectating.value) return;
+
+    /*
+     * 播放模式也跟着房间走（两端一致）：房间模式是共享状态，本机的模式选择器只是它的镜像。
+     * 放在旁观判断之后 —— 旁观设备不碰播放器，它自己的模式是自己的。
+     */
+    const player = usePlayerStore();
+    if (payload.mode && payload.mode !== player.playMode) player.setPlayMode(payload.mode);
 
     if (payload.skipReason === 'unplayable' && payload.skippedTitle) {
       // 两端都会收到这一帧：各自提示一次「这首你/对方播不了，已跳过」。
@@ -829,6 +853,8 @@ export const useRoomStore = defineStore('room', () => {
         kind: roomKind,
         queue: seed ?? player.queue,
         index: seed && seed.length > 0 ? 0 : player.index,
+        // 一进房就沿用创建者此刻的模式，免得刚建好就被默认值改掉。
+        mode: player.playMode,
       });
       enterRoom(result.code);
       toast.success(`一起听已创建，房间码 ${result.code}`);
@@ -974,6 +1000,7 @@ export const useRoomStore = defineStore('room', () => {
     playNow,
     removeAt,
     setQueue,
+    setMode,
     /** 房间进度推算（已校正时钟差），界面显示房间进度用它。 */
     positionOf: (state: RoomPlayback | null) => livePosition(state, clockOffsetMs),
   };

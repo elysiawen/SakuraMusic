@@ -29,6 +29,7 @@ export type RoomAction =
   | 'playNow'
   | 'remove'
   | 'setQueue'
+  | 'setMode'
   | 'ended'
   | 'unplayable';
 
@@ -43,6 +44,7 @@ const ACTIONS = new Set<RoomAction>([
   'playNow',
   'remove',
   'setQueue',
+  'setMode',
   'ended',
   'unplayable',
 ]);
@@ -87,6 +89,23 @@ export function roomPolicy(kind: RoomKind): {
 
 export function isRoomKind(value: unknown): value is RoomKind {
   return value === 'duo' || value === 'group';
+}
+
+/**
+ * 房间的播放模式。取值与客户端（web 的 `PlayMode`）的一一对应：
+ * `order` 顺序播放 / `all` 列表循环 / `one` 单曲循环 / `shuffle` 随机播放。
+ *
+ * **它是房间的共享状态**（和队列、播放态一样由服务端权威）：任一方改，两端都跟着变。
+ * 因为它决定的是「自然播完往哪走」——那件事必须两端一致，否则一端自动接了下一首、
+ * 另一端还停在原地。
+ *
+ * 缺省 `order`：这正是加这个字段**之前**的行为（队尾停下），所以不认识 `mode` 的
+ * 老客户端行为不变。
+ */
+export type RoomMode = 'order' | 'all' | 'one' | 'shuffle';
+
+export function isRoomMode(value: unknown): value is RoomMode {
+  return value === 'order' || value === 'all' || value === 'one' || value === 'shuffle';
 }
 
 /** 单个房间的队列上限。 */
@@ -141,6 +160,11 @@ interface Room {
   position: number;
   positionAt: number;
   duration: number;
+  /**
+   * 播放模式（两端共享，见 [RoomMode]）。决定「自然播完往哪走」：
+   * 顺序停下 / 列表循环回头 / 单曲重放 / 随机跳。
+   */
+  mode: RoomMode;
   /** 队列版本号，随队列变化递增。 */
   version: number;
   /** 本房间内已被判定「播不了」的曲目 key（换歌单时清空），避免两端来回弹。 */
@@ -223,6 +247,11 @@ export interface RoomPlaybackView {
   positionAt: number;
   duration: number;
   track: TrackSnapshot | null;
+  /**
+   * 房间的播放模式（见 [RoomMode]）。客户端据此把本机的模式选择器对齐到房间，
+   * 并在点选时改用 `setMode` action 上报，而不是只改本机。
+   */
+  mode: RoomMode;
   /** 这一帧是因为「有成员播不了、全员跳过」而产生的（供两端各自提示）。 */
   skipReason?: 'unplayable';
   skippedTitle?: string;
@@ -521,6 +550,7 @@ function playbackView(room: Room): RoomPlaybackView {
     positionAt: room.positionAt,
     duration: room.duration,
     track: currentTrack(room),
+    mode: room.mode,
   };
 }
 
@@ -713,6 +743,82 @@ function advanceIndex(room: Room, step: number, wrap: boolean): void {
   room.playing = true;
 }
 
+/** 原地重放当前这首：不换曲目，只把进度归零（单曲循环、以及「没别的可挑了」时用）。 */
+function restartCurrentTrack(room: Room): void {
+  room.position = 0;
+  room.positionAt = Date.now();
+  room.playing = true;
+}
+
+/**
+ * 随机换一首：排除当前这首，也排除本房间已判定「播不了」的（见 [skipToNextPlayable]）。
+ *
+ * 没有别的可挑（队列只有一首，或其余都放不了）时**原地重放当前这首**而不是停下 ——
+ * 随机模式下停住是最不像随机的行为。
+ */
+function advanceRandom(room: Room): void {
+  if (room.queue.length === 0) return;
+  const pool = room.queue
+    .map((_, i) => i)
+    .filter((i) => i !== room.index && !room.skipped.has(room.queue[i].key));
+  if (pool.length > 0) room.index = pool[Math.floor(Math.random() * pool.length)];
+  restartCurrentTrack(room);
+}
+
+/**
+ * 「自然播完」之后往哪走 —— **由房间的播放模式决定**，这里是模式同步真正生效的地方。
+ *
+ *   `one`     单曲循环：原地从头再放
+ *   `shuffle` 随机：随机换一首（见 [advanceRandom]）
+ *   `all`     列表循环：往后找第一首能放的，到队尾就回到队首
+ *   `order`   顺序：往后找第一首能放的，到队尾停下
+ *
+ * 往后走时**跳过已标记「播不了」的曲目**：否则会自动落到一首放不出来的歌上，
+ * 两端各自再报一次 `unplayable`，白绕一圈。
+ *
+ * 只作用于「自动接下一首」；手动 `next` / `prev` 仍是线性的（`next` 到队尾循环），
+ * 与本地播放器的手感一致。`unplayable` 触发的跳过走 [skipToNextPlayable]，不受模式影响。
+ */
+function advanceAfterEnd(room: Room): void {
+  if (room.queue.length === 0) {
+    room.playing = false;
+    return;
+  }
+  if (room.mode === 'one') {
+    restartCurrentTrack(room);
+    return;
+  }
+  if (room.mode === 'shuffle') {
+    advanceRandom(room);
+    return;
+  }
+
+  const playable = (i: number): boolean => !room.skipped.has(room.queue[i].key);
+  for (let i = room.index + 1; i < room.queue.length; i += 1) {
+    if (playable(i)) {
+      room.index = i;
+      restartCurrentTrack(room);
+      return;
+    }
+  }
+  if (room.mode === 'all') {
+    for (let i = 0; i < room.index; i += 1) {
+      if (playable(i)) {
+        room.index = i;
+        restartCurrentTrack(room);
+        return;
+      }
+    }
+    // 整队都被判「播不了」：回到当前这首再放一遍，别空转。
+    restartCurrentTrack(room);
+    return;
+  }
+  // 顺序播放：队尾停下（这是加 `mode` 之前就有的行为）。
+  room.position = room.duration;
+  room.positionAt = Date.now();
+  room.playing = false;
+}
+
 /** 跳到下一首「没被标记为播不了」的曲目；后面没有可播的了就停下。 */
 function skipToNextPlayable(room: Room): void {
   for (let i = room.index + 1; i < room.queue.length; i += 1) {
@@ -754,11 +860,14 @@ function applySetQueue(room: Room, input: unknown, indexInput: unknown): void {
   syncDuration(room);
 }
 
-/** 创建房间并把创建者放入；可选指定房间类型与初始队列（「一起听我现在的队列」一步到位）。 */
+/**
+ * 创建房间并把创建者放入；可选指定房间类型、初始队列（「一起听我现在的队列」一步到位）
+ * 与初始播放模式（缺省 `order`；客户端一般带自己当前的模式上来，免得一进房就变）。
+ */
 export function createRoom(
   user: RoomUser,
   device: { deviceId: string; name?: string; kind?: string },
-  options?: { kind?: unknown; queue?: unknown; index?: unknown },
+  options?: { kind?: unknown; queue?: unknown; index?: unknown; mode?: unknown },
 ): string {
   const kind: RoomKind = isRoomKind(options?.kind) ? options.kind : 'duo';
   // 缺省的、以及没实现的类型都在这里挡掉——客户端此刻拿不到多人房，别让它建出半成品。
@@ -782,6 +891,7 @@ export function createRoom(
     position: 0,
     positionAt: Date.now(),
     duration: 0,
+    mode: isRoomMode(options?.mode) ? options.mode : 'order',
     version: 0,
     skipped: new Set(),
     pair: null,
@@ -926,7 +1036,9 @@ export function applyAction(
       break;
 
     case 'next':
-      advanceIndex(room, 1, true);
+      // 手动切歌：随机模式下换一首随机的；其余模式线性往后（到队尾循环，与本地播放器一致）。
+      if (room.mode === 'shuffle') advanceRandom(room);
+      else advanceIndex(room, 1, true);
       break;
 
     case 'prev':
@@ -1030,22 +1142,20 @@ export function applyAction(
       queueChanged = true;
       break;
 
+    case 'setMode': {
+      // 房间的播放模式是共享状态：改这里就等于两端一起改（面板上的模式选择器据此对齐）。
+      if (!isRoomMode(data.mode)) throw badRequest('播放模式不合法', 'invalid_mode');
+      room.mode = data.mode;
+      break;
+    }
+
     case 'ended': {
       const key = String(data.trackKey ?? '');
       const track = currentTrack(room);
       // 不是当前这首（迟到或另一端的重复上报）：忽略，保证「自然结束」只切一次。
       if (!track || track.key !== key) break;
-      if (room.index < room.queue.length - 1) {
-        room.index += 1;
-        room.position = 0;
-        room.positionAt = Date.now();
-        room.playing = true;
-      } else {
-        // 队尾：停下，不循环（v1 不做循环播放）。
-        room.position = room.duration;
-        room.positionAt = Date.now();
-        room.playing = false;
-      }
+      // 往哪走由房间的播放模式决定（顺序停下 / 列表循环 / 单曲重放 / 随机）。
+      advanceAfterEnd(room);
       break;
     }
 

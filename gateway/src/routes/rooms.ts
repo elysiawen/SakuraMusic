@@ -28,6 +28,8 @@ export async function registerRoomRoutes(app: FastifyInstance): Promise<void> {
       kind?: string;
       queue?: unknown;
       index?: number;
+      /** 初始播放模式：order / all / one / shuffle（缺省 order）。 */
+      mode?: string;
     };
   }>('/api/rooms/create', async (request) => {
     const user = await requireUser(request);
@@ -39,7 +41,7 @@ export async function registerRoomRoutes(app: FastifyInstance): Promise<void> {
         name: String(body.name ?? ''),
         kind: String(body.deviceKind ?? ''),
       },
-      { kind: body.kind, queue: body.queue, index: body.index },
+      { kind: body.kind, queue: body.queue, index: body.index, mode: body.mode },
     );
     return { code };
   });

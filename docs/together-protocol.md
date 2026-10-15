@@ -14,6 +14,15 @@
 
 ## 最近更新
 
+> **2026-10-15** —— **播放模式（顺序 / 列表循环 / 单曲循环 / 随机）纳入房间同步**：
+>
+> - 新增 action `setMode { mode }`；`RoomPlaybackView` 新增 `mode` 字段；`create` 可带初始
+>   `mode`（缺省 `order`）→ 见 5.3
+> - **`ended` 之后往哪走改由 `mode` 决定**（原来固定「往后一首、队尾停下」）：`order` 停下 /
+>   `all` 回到队首 / `one` 原地重放 / `shuffle` 随机换一首 → 见 5.1
+> - `order` 正是改动前的行为，所以**不带 `mode` 的客户端行为不变**；手动 `next` / `prev`
+>   仍是线性的（`next` 到队尾循环），只有「自动接下一首」看模式
+
 > **2026-10-13** —— 更正一处**客户端行为**（协议本身没变，服务端也没改）：
 >
 > - 席位被同账号的另一台设备接走（`room: null` + `reason: 'seat_taken'`）时，原来那台应当
@@ -161,6 +170,7 @@
     "durationMs": 269000,
     "sources": [{ "platform": "netease", "id": "186016" }]
   },
+  "mode": "all",
   "serverNow": 1758600000000,
   "skipReason": "unplayable",
   "skippedTitle": "夜曲"
@@ -169,6 +179,8 @@
 
 - `track` 为 `null` 表示房间当前没有可播放的曲目（空房间或已播完）。
 - `position` / `duration` 单位是**秒**，`track.durationMs` 是**毫秒**（与多设备协议同一约定）。
+- `mode` 是房间的播放模式（`order` / `all` / `one` / `shuffle`，见 5.3）。客户端把它当作
+  **本机模式选择器的唯一真相**：收到就对齐本机；用户点选时改走 `setMode`，不要只改本机。
 - `skipReason` / `skippedTitle` 只在「有一方播不了、全员跳过」这一帧出现（见 6.3）。
 
 ### TrackSnapshot
@@ -214,13 +226,17 @@
 ```
 POST /api/rooms/create
 { "deviceId": "ab.cd", "name": "客厅", "deviceKind": "web",
-  "kind": "duo", "queue": [ /* UnifiedTrack[]，可选 */ ], "index": 0 }
+  "kind": "duo", "queue": [ /* UnifiedTrack[]，可选 */ ], "index": 0,
+  "mode": "all" }
 → { "code": "7K2QMF" }
 ```
 
 - `deviceKind` 是**设备形态**（web / android / windows），缺省按 `web` 处理。
 - `kind` 是**房间类型**，缺省 `duo`；目前只有 `duo` 会被放行（见第 0 节）。
 - 不带 `queue` 时创建空房间（随后用 `setQueue` 填）。
+- `mode` 是**初始播放模式**（`order` / `all` / `one` / `shuffle`），缺省 `order`。
+  客户端一般把自己当前的模式传上来，免得刚建好就被默认值改掉；加入方一律以房间的
+  `mode` 为准（见 5.3）。
 
 ### 4.2 join
 
@@ -299,6 +315,7 @@ GET /api/rooms/:code
 | `playNow` | `{ track }` | 点歌并播放：不在队列里就追加，然后跳到它从头播 |
 | `remove` | `{ index }` | 从队列移除 |
 | `setQueue` | `{ queue, index? }` | 换歌单：整体替换队列并清空跳过记录，从第一首开始播 |
+| `setMode` | `{ mode }` | 改播放模式（`order` / `all` / `one` / `shuffle`，**两端共享**，见 5.3） |
 | `ended` | `{ trackKey }` | 自然播完上报（见 5.1） |
 | `unplayable` | `{ trackKey }` | 本机播不了这首，请全员跳过（见 5.2） |
 
@@ -311,7 +328,21 @@ GET /api/rooms/:code
 房间里两端会**几乎同时**算出曲目结束。上报 `ended` 时带上**刚播完那首的 key**，
 服务端只在它等于房间当前曲目时才前进——另一端迟到的上报会被忽略。所以「自然播完」**只会切一次**。
 
-到队尾则停下（`playing: false`），v1 不做循环播放。
+**往哪走由房间的播放模式决定**：
+
+| `mode` | 自然播完之后 |
+|---|---|
+| `order` 顺序播放 | 往后一首；到队尾停下（`playing: false`）。**这就是加 `mode` 之前的行为** |
+| `all` 列表循环 | 往后一首；到队尾回到队首 |
+| `one` 单曲循环 | 不换曲目，当前这首从头再放 |
+| `shuffle` 随机播放 | 随机换一首（排除当前这首） |
+
+往后找时**跳过本房间已标记「播不了」的曲目**（见 5.2）：否则会自动落到一首放不出来的歌上，
+两端各自再报一次 `unplayable`，白绕一圈。队尾/随机都没得挑时，`all` 与 `shuffle` 会回到
+当前这首再放一遍，而不是空转。
+
+只有**自动接下一首**看模式；手动 `next` / `prev` 仍旧是线性的（`next` 到队尾循环），
+与本地播放器的手感一致。
 
 ### 5.2 一方播不了 → 全员跳过
 
@@ -328,6 +359,23 @@ GET /api/rooms/:code
 参考实现在 Web 端是由播放器给出的失败分类信号驱动的（`player.ts` 的 `lastFailure`，
 `kind: 'unplayable' | 'transient'`）。Android 端需要一条等价的信号：
 把「解析取流地址返回 4xx / 只拿到试听」判为 `unplayable`，网络类错误判为 `transient`。
+
+### 5.3 播放模式是共享的：`setMode`
+
+```
+POST /api/rooms/action
+{ "deviceId": "ab.cd", "action": "setMode", "payload": { "mode": "all" } }
+```
+
+`mode` ∈ `order` / `all` / `one` / `shuffle`（与客户端的模式枚举一一对应）；不合法 → `400 invalid_mode`。
+
+- **它和队列、播放态一样是房间的共享状态**：任一方改，服务端随下一帧 `room-playback`
+  把 `mode` 广播给两端，两端的选择器都跟着变。
+- **为什么必须上报、不能只改本机**：房间里「自然播完往哪走」由服务端按房间模式决定（5.1）。
+  只改本机的话，播完时本机和服务端各按各的走 —— 一端自动接了下一首，另一端停在原地。
+- 入房后客户端要**把本机选择器对齐到房间的 `mode`**，不要沿用自己进房前的模式。
+- 改模式**不动当前曲目与进度**，换的只是「播完之后怎么走」。
+- 退出房间时恢复自己原来的模式（与恢复个人播放现场同一套收尾，见 6.4）。
 
 ---
 
@@ -608,6 +656,7 @@ GET /api/rooms/overview/:partnerId
 | 400 | `invalid_device_id` | `deviceId` 为空或超过 64 字符 | 修 bug |
 | 400 | `invalid_index` / `invalid_position` / `invalid_track` | 参数不合法 | 修 bug |
 | 400 | `unknown_action` | action 不在白名单 | 修 bug |
+| 400 | `invalid_mode` | `setMode` 的 `mode` 不是四个取值之一 | 修 bug |
 | 400 | `queue_full` / `queue_too_large` | 队列超限 | 提示用户 |
 | 400 | `room_empty` | 空房间执行了 `play` | 先 `setQueue` |
 | 400 | `room_kind_unsupported` | 创建了尚未开放的房间类型（`group`） | 隐藏该入口 |
@@ -627,7 +676,9 @@ GET /api/rooms/overview/:partnerId
 - [ ] 创建 / 加入房间（`create` / `join`），处理 `room_full`、`room_not_found`、`room_kind_unsupported`
 - [ ] 用 `serverNow` 校正时钟差；实现 `livePosition`
 - [ ] 200ms 本地节拍镜像房间状态（切歌 + 播放态 + 阈值 seek/速率微调）
-- [ ] 接入全部 11 个 action；本机操作走 action 而不是直接控制播放器
+- [ ] 接入全部 12 个 action；本机操作走 action 而不是直接控制播放器
+- [ ] 播放模式跟着房间：收到 `room-playback.mode` 就对齐本机选择器，点选时发 `setMode`
+      （而不是只改本机）；退出房间恢复自己的模式（见 5.3）
 - [ ] `ended`：由播放器的「播完」事件上报（带 trackKey），不要本地自行切歌
 - [ ] `unplayable`：区分确定性失败与网络失败，只上报前者
 - [ ] 入房暂存个人现场、退房恢复；房间期间不落盘个人现场

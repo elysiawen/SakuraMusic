@@ -1,5 +1,5 @@
 import type { UnifiedTrack } from '@/api/types';
-import { usePlayerStore } from '@/stores/player';
+import { usePlayerStore, type PlayMode } from '@/stores/player';
 import { useRoomStore } from '@/stores/room';
 
 /**
@@ -52,6 +52,16 @@ export function useTransport() {
     addToQueue: (track: UnifiedTrack): void => {
       if (room.seatActive) room.addTrack(track);
       else player.addToQueue(track);
+    },
+    /**
+     * 播放模式（顺序 / 列表循环 / 单曲循环 / 随机）。
+     *
+     * 房间里它是**共享状态**：必须上报给房间，两端一起变——否则本机按自己的模式走
+     * （比如单曲循环），而服务端按房间模式决定"自然播完往哪走"，两端就岔开了。
+     */
+    setPlayMode: (mode: PlayMode): void => {
+      if (room.seatActive) room.setMode(mode);
+      else player.setPlayMode(mode);
     },
   };
 }

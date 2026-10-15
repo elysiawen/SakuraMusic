@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useTransport } from '@/composables/useTransport';
 import { usePlayerStore, type PlayMode } from '@/stores/player';
+import { useRoomStore } from '@/stores/room';
 import AppIcon from './AppIcon.vue';
 
 /**
  * 播放模式选择器（顺序 / 列表循环 / 单曲循环 / 随机）。
  * 原本是「随机」和「循环」两个独立按钮：随机只能开或关、循环只能一个个轮换。
  * 这里收成一个按钮 + 列表，按钮图标即当前模式，点开才展开全部选项。
+ *
+ * 切换走 `useTransport`：**一起听时模式是房间的共享状态**（两端一起变、由服务端决定
+ * "播完往哪走"），直接改本机只会被房间镜像立刻拽回去。
  */
 const MODES: Record<PlayMode, { label: string; icon: string; hint: string }> = {
   order: { label: '顺序播放', icon: 'order', hint: '播完最后一首就停下' },
@@ -19,15 +24,19 @@ const MODES: Record<PlayMode, { label: string; icon: string; hint: string }> = {
 const MODE_ORDER: PlayMode[] = ['order', 'all', 'one', 'shuffle'];
 
 const player = usePlayerStore();
+const room = useRoomStore();
+const transport = useTransport();
 const open = ref(false);
 const wrapRef = ref<HTMLElement | null>(null);
 
 const current = computed(() => MODES[player.playMode]);
+/** 本机占着一起听席位：这时模式是房间共享的，改一下两端一起变。 */
+const inRoom = computed(() => room.seatActive);
 
 function select(mode: PlayMode): void {
   open.value = false;
   if (mode === player.playMode) return;
-  player.setPlayMode(mode);
+  transport.setPlayMode(mode);
 }
 
 function onDocumentPointerDown(event: PointerEvent): void {
@@ -72,6 +81,9 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
         </span>
         <AppIcon v-if="player.playMode === mode" name="check" :size="14" :stroke-width="2.6" />
       </button>
+
+      <!-- 一起听时模式是共享的：说一句，免得用户以为「我改了怎么没生效」或「对方怎么也跟着变了」 -->
+      <p v-if="inRoom" class="mode-note">一起听中：切换播放模式两端同步，播完由房间接下一首</p>
     </div>
   </div>
 </template>
@@ -130,5 +142,15 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 
 .mode-option.is-active .mode-icon {
   color: var(--brand-600);
+}
+
+/* 一起听提示：只在房间里出现，别抢了模式的视觉重心。 */
+.mode-note {
+  margin: 4px 4px 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
 }
 </style>

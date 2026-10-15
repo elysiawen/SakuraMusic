@@ -12,6 +12,14 @@ export type RoomKind = 'duo' | 'group';
 /** 房间内角色。双人房恒为 `member`。 */
 export type RoomRole = 'owner' | 'member';
 
+/**
+ * 房间的播放模式，与 `player` store 的 `PlayMode` 取值一一对应。
+ *
+ * 它是**房间的共享状态**：任一方改，两端都跟着变（面板上的模式选择器据此对齐）。
+ * 服务端据此决定「自然播完往哪走」——顺序停下 / 列表循环回头 / 单曲重放 / 随机跳。
+ */
+export type RoomMode = 'order' | 'all' | 'one' | 'shuffle';
+
 /** 房间里的曲目摘要：与网关的 `TrackSnapshot` 一一对应，展示 + 取流够用。 */
 export interface RoomTrack {
   key: string;
@@ -83,6 +91,8 @@ export interface RoomPlayback {
   positionAt: number;
   duration: number;
   track: RoomTrack | null;
+  /** 房间当前的播放模式（两端共享）。 */
+  mode: RoomMode;
   /** 这一帧是「有成员播不了、全员跳过」产生的。 */
   skipReason?: 'unplayable';
   skippedTitle?: string;
@@ -100,6 +110,8 @@ export type RoomAction =
   | 'playNow'
   | 'remove'
   | 'setQueue'
+  /** 改播放模式（两端共享，服务端据此决定自然播完往哪走）。 */
+  | 'setMode'
   | 'ended'
   | 'unplayable';
 
@@ -112,6 +124,8 @@ export interface RoomActionPayload {
   track?: unknown;
   /** `setQueue` 用：整份新队列（前端 `UnifiedTrack[]`）。 */
   queue?: unknown[];
+  /** `setMode` 用：新的播放模式。 */
+  mode?: RoomMode;
 }
 
 export interface RoomPreview {
@@ -185,6 +199,8 @@ export const roomApi = {
     kind?: RoomKind;
     queue?: unknown[];
     index?: number;
+    /** 初始播放模式，缺省 `order`（一般传本机当前模式，免得一进房就变）。 */
+    mode?: RoomMode;
   }) => apiRequest<{ code: string }>('/api/rooms/create', { method: 'POST', body: input }),
 
   join: (input: { code: string; deviceId: string; name?: string; deviceKind?: string }) =>
