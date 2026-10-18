@@ -55,6 +55,16 @@ export function normalizeTitle(title: string): string {
     .trim();
 }
 
+/**
+ * 只去标点与空白的标题归一化（保留括号）。
+ *
+ * 判断「搜的就是这首」时用它：`normalizeTitle` 会把括号内容整个丢掉，
+ * 于是「晴天(深情版)」和「晴天」会被当成完全同名。
+ */
+export function normalizeTitleStrict(title: string): string {
+  return title.toLowerCase().replace(/[\s\-_.·・'"!?,，。！？、:：;；&＆+*]/g, '');
+}
+
 /** 跨平台去重用的歌手归一化。 */
 export function normalizeArtist(artist: string): string {
   return artist.toLowerCase().replace(/[\s\-_.·・'"!?,，。！？、:：;；&＆+*]/g, '').trim();

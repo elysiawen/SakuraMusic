@@ -325,16 +325,55 @@ async function searchResult(
   return asObj(body.result);
 }
 
+/**
+ * 搜索结果里的翻唱线索。
+ *
+ * `coverType` 为 2/3 表示这条是翻唱；`origin*` 指向原曲（名字 + 原唱），
+ * 原唱不在网易云时（如周杰伦）也照样给 —— 排序靠它认出「原唱是谁」。
+ */
+export interface CoverHint {
+  coverType: number;
+  originTitle?: string;
+  originArtist?: string;
+}
+
+export interface TrackSearchResult {
+  items: UnifiedTrack[];
+  /** `UnifiedTrack.key` → 翻唱线索；只用于排序，不进接口。 */
+  hints: Map<string, CoverHint>;
+}
+
+function coverHintOf(raw: unknown): CoverHint | null {
+  const song = asObj(raw);
+  const coverType = num(song.originCoverType);
+  const origin = asObj(song.originSongSimpleData);
+  const originTitle = stripHtml(origin.name);
+  const originArtist = str(asObj(asArr(origin.artists)[0]).name);
+  if (!coverType && !originTitle) return null;
+  return {
+    coverType,
+    originTitle: originTitle || undefined,
+    originArtist: originArtist || undefined,
+  };
+}
+
 export async function searchTracks(
   keyword: string,
   page: number,
   limit: number,
   cookie: string | null,
-): Promise<UnifiedTrack[]> {
+): Promise<TrackSearchResult> {
   const result = await searchResult(keyword, SEARCH_TYPES.song, page, limit, cookie);
-  return asArr(result.songs)
-    .map((song) => mapNeteaseSong(song))
-    .filter((item): item is UnifiedTrack => item !== null);
+  const items: UnifiedTrack[] = [];
+  const hints = new Map<string, CoverHint>();
+  for (const raw of asArr(result.songs)) {
+    const item = mapNeteaseSong(raw);
+    if (!item) continue;
+    items.push(item);
+    const hint = coverHintOf(raw);
+    if (hint) hints.set(item.key, hint);
+  }
+  return { items, hints };
 }
 
 export async function searchArtists(
