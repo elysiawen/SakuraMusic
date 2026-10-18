@@ -19,6 +19,20 @@ export type DeviceKind = 'web' | 'android' | 'windows';
 // 曲目快照（TrackSnapshot / TrackSourceSnapshot）与清洗规则见 ./playback —— 「一起听」房间复用同一份。
 
 
+/**
+ * 播放模式。取值与 Web 的 `PlayMode`、房间的 `RoomMode` 一一对应。
+ *
+ * 它决定「自然播完往哪走」：顺序停下 / 列表循环回头 / 单曲重放 / 随机跳。
+ * 控制端据此显示对方现在用的是哪一种，并可以远程切换（`mode` 指令）。
+ */
+export type PlayMode = 'order' | 'all' | 'one' | 'shuffle';
+
+const PLAY_MODES = new Set<PlayMode>(['order', 'all', 'one', 'shuffle']);
+
+function isPlayMode(value: unknown): value is PlayMode {
+  return typeof value === 'string' && PLAY_MODES.has(value as PlayMode);
+}
+
 export interface PlaybackSnapshot {
   track: TrackSnapshot | null;
   playing: boolean;
@@ -30,6 +44,13 @@ export interface PlaybackSnapshot {
   volume: number;
   quality: string;
   queueLength: number;
+  /**
+   * 播放模式。
+   *
+   * 可选：老客户端不报这个字段。控制端据此决定「显示并允许切换对方的模式」，
+   * 缺省（`undefined`）时如实显示为未知，而不是假装它是顺序播放。
+   */
+  playMode?: PlayMode;
   /**
    * 这台设备正在跟随谁（对端的 deviceId）。
    *
@@ -106,6 +127,23 @@ const ACTIONS = new Set([
   'unfollow',
   'transfer',
   'release',
+  /** 切换目标设备的播放模式（顺序 / 列表循环 / 单曲循环 / 随机）。 */
+  'mode',
+  /** 播放目标设备播放列表里的第 N 首。 */
+  'playAt',
+  /** 从目标设备的播放列表里移除第 N 首。 */
+  'remove',
+  /** 往目标设备的播放列表末尾追加一首。 */
+  'add',
+  /**
+   * 要一份目标设备的播放列表快照。
+   *
+   * 队列体积大（每首带取流坐标），不能塞进每次变化都要全量广播的播放状态里，
+   * 所以按需索取：控制端发 `queue`，目标设备用 `queueState` 回传。
+   */
+  'queue',
+  /** `queue` 的应答：`{ queue, index }`，由被请求的那台设备发回请求方。 */
+  'queueState',
 ]);
 
 /**
@@ -196,6 +234,8 @@ function sanitizeSnapshot(input: unknown): PlaybackSnapshot | null {
     volume: readNumber(raw.volume, 1, 0, 1),
     quality: readString(raw.quality, 20),
     queueLength: Math.round(readNumber(raw.queueLength, 0, 0, 10_000)),
+    // 认不出来的值当作没报：控制端据此显示「未知」比显示一个错的模式好。
+    playMode: isPlayMode(raw.playMode) ? raw.playMode : undefined,
     following: readString(raw.following, DEVICE_ID_MAX) || undefined,
   };
 }

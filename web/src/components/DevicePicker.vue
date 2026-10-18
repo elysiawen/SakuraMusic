@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import type { ConnectDevice } from '@/api/connect';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import type { ConnectDevice, ConnectPlayMode } from '@/api/connect';
 import { useConnectStore } from '@/stores/connect';
 import { usePlayerStore } from '@/stores/player';
 import { useRoomStore } from '@/stores/room';
@@ -46,6 +46,8 @@ const open = ref(false);
 const wrapRef = ref<HTMLElement | null>(null);
 const renaming = ref(false);
 const draftName = ref('');
+const nameInput = ref<HTMLInputElement | null>(null);
+const renameRef = ref<HTMLElement | null>(null);
 
 /*
  * 进度是本地按 positionAt 推算的，服务端不会为此再推事件过来 ——
@@ -57,6 +59,13 @@ let tickTimer: number | undefined;
 
 /** 只有真的有设备在放歌才需要走秒：都停着的话进度本来就不会变。 */
 const anyPlaying = computed(() => connect.devices.some((item) => item.state?.playing === true));
+
+/** 本机永远置顶。 */
+const orderedDevices = computed(() => {
+  const self = connect.devices.filter((item) => item.deviceId === connect.deviceId);
+  const others = connect.devices.filter((item) => item.deviceId !== connect.deviceId);
+  return [...self, ...others];
+});
 
 watch(
   anyPlaying,
@@ -74,17 +83,77 @@ watch(
 );
 
 function onDocumentPointerDown(event: PointerEvent): void {
+  const target = event.target instanceof Node ? event.target : null;
+
+  // 点的是浮层本身：不关它，也别顺手把面板关掉（里面的按钮自己会收尾）。
+  if (target && floatRef.value?.contains(target)) return;
+
+  // 改名弹窗 Teleport 到了 body，和面板不在同一棵树里。
+  if (target && renameRef.value?.contains(target)) return;
+
+  // 点的是那两个开关图标：交给它们的 click 去「开 / 关」，这里别抢先关掉。
+  if (target instanceof Element && target.closest('[data-float-toggle]')) return;
+
+  if (float.value) float.value = null;
+
   if (!open.value) return;
   const wrap = wrapRef.value;
-  if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
+  if (wrap && target && wrap.contains(target)) return;
   open.value = false;
   renaming.value = false;
 }
 
-onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown));
+function onDocumentKeyDown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return;
+  if (renaming.value) renaming.value = false;
+  else if (float.value) float.value = null;
+}
+
+/*
+ * 浮层是 fixed 定位、按按钮的屏幕位置摆的：按钮一挪，它就得收起。
+ *
+ * 但 scroll 事件不冒泡，这里是捕获阶段收到的**所有**滚动（歌词把当前行滚进视野、
+ * 播放列表自己滚…），不能一律当成「按钮动了」—— 否则歌一听起来，浮层就跟着歌词
+ * 一句一关。所以只认两种真的会挪动按钮的滚动：
+ *
+ * - 页面本身在滚（target 是 document / body）；
+ * - 设备面板里的列表在滚（按钮在它里面）。
+ *
+ * 浮层自己的滚动（滚轮翻列表）自然也不算。
+ */
+function onDocumentScroll(event: Event): void {
+  if (!float.value) return;
+  const target = event.target instanceof Node ? event.target : null;
+
+  if (target && floatRef.value?.contains(target)) return;
+
+  const isPage =
+    !target ||
+    target === document ||
+    target === document.body ||
+    target === document.documentElement;
+  const inPicker = !!target && !!wrapRef.value?.contains(target);
+  if (isPage || inPicker) float.value = null;
+}
+
+/** 视口尺寸一变，刚才算好的贴边位置就不准了；直接收起，下次点开重新摆。 */
+function onWindowResize(): void {
+  if (float.value) float.value = null;
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown);
+  document.addEventListener('keydown', onDocumentKeyDown);
+  document.addEventListener('scroll', onDocumentScroll, true);
+  window.addEventListener('resize', onWindowResize);
+});
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown);
+  document.removeEventListener('keydown', onDocumentKeyDown);
+  document.removeEventListener('scroll', onDocumentScroll, true);
+  window.removeEventListener('resize', onWindowResize);
   if (tickTimer !== undefined) window.clearInterval(tickTimer);
+  stopSettleTimer();
 });
 
 function isSelf(device: ConnectDevice): boolean {
@@ -110,10 +179,14 @@ function trackLineOf(device: ConnectDevice): string {
   return `${state.track.title} — ${state.track.artists}`;
 }
 
-/** 播放位置文本。读一下 tick 建立依赖，否则它不会自己走。 */
+/**
+ * 播放位置文本，与滑块同一口径：拖动 / 等回执期间显示的一直是那个目标位置，
+ * 否则滑块到了 2:30、左边的时间还写着 1:10，看起来像两条线在打架。
+ */
 function positionText(device: ConnectDevice): string {
   void tick.value;
-  return device.state ? formatDuration(connect.positionOf(device.state) * 1000) : '0:00';
+  if (!device.state) return '0:00';
+  return formatDuration(Math.max(0, sliderValue(device, 'progress')) * 1000);
 }
 
 function durationText(device: ConnectDevice): string {
@@ -133,6 +206,10 @@ function castHint(device: ConnectDevice): string {
 async function togglePlay(device: ConnectDevice): Promise<void> {
   // 用明确的 play / pause，而不是 toggle：指令要表达意图，不依赖双方状态严丝合缝。
   await connect.control(device.deviceId, device.state?.playing ? 'pause' : 'play');
+}
+
+function skip(device: ConnectDevice, action: 'prev' | 'next'): Promise<void> {
+  return connect.control(device.deviceId, action);
 }
 
 /**
@@ -158,6 +235,163 @@ async function activate(device: ConnectDevice): Promise<void> {
     return;
   }
   open.value = false;
+}
+
+/**
+ * 遥控对方的播放模式。
+ *
+ * 四种模式与播放条上那个选择器**同一套**（图标、叫法、说明都一致），免得同一个概念
+ * 在两种界面里长成两个样子。选完直接发 `mode` 指令：模式在对方设备上是本机状态，
+ * 由它自己改完再补报回来，这边只等广播。
+ */
+const MODE_ITEMS: { mode: ConnectPlayMode; icon: string; label: string; hint: string }[] = [
+  { mode: 'order', icon: 'order', label: '顺序播放', hint: '播完最后一首就停下' },
+  { mode: 'all', icon: 'repeat', label: '列表循环', hint: '播完自动回到第一首' },
+  { mode: 'one', icon: 'repeat-one', label: '单曲循环', hint: '反复播放当前这一首' },
+  { mode: 'shuffle', icon: 'shuffle', label: '随机播放', hint: '随机跳到队列中的某一首' },
+];
+
+/**
+ * 模式菜单与播放列表共用的一块浮层。
+ *
+ * 一次只开一个，记着它属于哪台设备、贴在屏幕的哪个位置：
+ * - 两者都是「点图标才出来」的临时面板，开一个就该收掉另一个；
+ * - 用 fixed + Teleport 而不是在卡片里就地展开：设备列表是 `overflow-y: auto` 的滚动容器，
+ *   放在里面的浮层会被裁掉（靠边的卡片尤其明显）。
+ */
+type FloatKind = 'mode' | 'queue';
+
+interface FloatBox {
+  kind: FloatKind;
+  deviceId: string;
+  /** 距视口左边的距离。 */
+  left: number;
+  /** 朝下展开时的上边距；朝上展开时为 null，改由 [bottom] 定。 */
+  top: number | null;
+  /** 朝上展开时的下边距：贴着按钮底边往上长，内容变高也不会盖住按钮。 */
+  bottom: number | null;
+  /** 可用高度：面板再高也不越过视口，多出来的部分自己滚。 */
+  maxHeight: number;
+}
+
+const float = ref<FloatBox | null>(null);
+const floatRef = ref<HTMLElement | null>(null);
+
+/** 两块浮层的宽度，与样式里的 `.device-float-mode` / `.device-float-queue` 保持一致（摆位要用）。 */
+const MODE_MENU_W = 208;
+const QUEUE_PANEL_W = 272;
+
+/** 浮层现在的归属设备（设备可能中途下线，所以每次按 id 现查）。 */
+const floatDevice = computed(
+  () => connect.devices.find((item) => item.deviceId === float.value?.deviceId) ?? null,
+);
+
+/** 浮层里那份队列快照（没拉到时为 null）。 */
+const floatQueue = computed(() =>
+  floatDevice.value ? (connect.remoteQueues[floatDevice.value.deviceId] ?? null) : null,
+);
+
+/**
+ * 打开 / 收起浮层，并贴着按钮摆好位置。
+ *
+ * `event` 只是用来拿按钮位置。摆位只依赖「常量宽度 + 可用空间」，不看渲染后的尺寸，
+ * 所以不需要先隐藏再测量，也不会闪一下再跳到位。
+ */
+function toggleFloat(kind: FloatKind, device: ConnectDevice, event: MouseEvent): void {
+  if (float.value?.kind === kind && float.value.deviceId === device.deviceId) {
+    float.value = null;
+    return;
+  }
+  const button = event.currentTarget as HTMLElement | null;
+  if (!button) return;
+
+  const anchor = button.getBoundingClientRect();
+  const gutter = 8;
+  const width = kind === 'queue' ? QUEUE_PANEL_W : MODE_MENU_W;
+  const left = Math.max(gutter, Math.min(anchor.right - width, window.innerWidth - width - gutter));
+  // 朝空间大的那一侧展开；贴边距用的是「按钮与视口」的距离，面板长高也不会盖住按钮。
+  const aboveSpace = anchor.top - gutter * 2;
+  const belowSpace = window.innerHeight - anchor.bottom - gutter * 2;
+  const placeAbove = aboveSpace >= belowSpace;
+  float.value = {
+    kind,
+    deviceId: device.deviceId,
+    left,
+    top: placeAbove ? null : anchor.bottom + gutter,
+    bottom: placeAbove ? window.innerHeight - anchor.top + gutter : null,
+    maxHeight: Math.max(140, placeAbove ? aboveSpace : belowSpace),
+  };
+
+  // 播放列表是按需拉的：每次打开都要一份新的，否则看到的还是上次那份快照。
+  if (kind === 'queue') void connect.requestQueue(device.deviceId, true);
+}
+
+const floatStyle = computed(() => {
+  const box = float.value;
+  if (!box) return {};
+  return {
+    left: `${box.left}px`,
+    top: box.top === null ? undefined : `${box.top}px`,
+    bottom: box.bottom === null ? undefined : `${box.bottom}px`,
+    maxHeight: `${box.maxHeight}px`,
+  };
+});
+
+function modeOf(device: ConnectDevice): (typeof MODE_ITEMS)[number] | null {
+  return MODE_ITEMS.find((item) => item.mode === device.state?.playMode) ?? null;
+}
+
+/** 那个图标按钮本身就是「它现在用的模式」；没报过的老客户端用循环的图标兜底。 */
+function modeIconOf(device: ConnectDevice): string {
+  return modeOf(device)?.icon ?? 'repeat';
+}
+
+function modeHint(device: ConnectDevice): string {
+  const current = modeOf(device);
+  return current ? `播放模式：${current.label}（点击切换）` : '播放模式：未知（点击切换）';
+}
+
+/** 选中一种模式：浮层收起，指令发给那台设备。 */
+function selectMode(mode: ConnectPlayMode): void {
+  const device = floatDevice.value;
+  float.value = null;
+  if (!device || device.state?.playMode === mode) return;
+  void connect.control(device.deviceId, 'mode', { mode });
+}
+
+/*
+ * 面板一关就把浮层收掉。
+ *
+ * 播放列表是「打开时才向对方要」的一份快照：留着的话，下次打开面板看到的是上一次的
+ * 旧列表，而且不会重新请求。
+ */
+watch(open, (value) => {
+  if (value) return;
+  float.value = null;
+});
+
+function refreshQueue(): void {
+  const device = floatDevice.value;
+  if (device) void connect.requestQueue(device.deviceId, true);
+}
+
+/** 点列表里的某一行 = 让那台设备播这一首。 */
+function playRemoteAt(index: number): void {
+  const device = floatDevice.value;
+  if (device) void connect.controlQueue(device.deviceId, 'playAt', { index });
+}
+
+function removeRemoteAt(index: number): void {
+  const device = floatDevice.value;
+  if (device) void connect.controlQueue(device.deviceId, 'remove', { index });
+}
+
+/** 把本机当前这首追加到对方的播放列表（对方已有同一首时会拒绝，由它自己提示）。 */
+function addCurrentToRemote(): void {
+  const device = floatDevice.value;
+  const track = player.current;
+  if (!device || !track) return;
+  void connect.controlQueue(device.deviceId, 'add', { track });
 }
 
 /** 跟随中的设备名，用于面板上那句提示。 */
@@ -210,51 +444,162 @@ function canCast(device: ConnectDevice): boolean {
 }
 
 /*
- * 正在拖动的滑块：key 是 `${deviceId}:progress|volume`，值是被拖到的位置。
+ * 滑块的「草稿值」：key 是 `${deviceId}:progress|volume`。
  *
- * 必须记一下：进度每秒跟着 tick 重渲染，若 :value 一直绑推算值，
- * 滑块会在手指底下被拽回去。
+ * 它有两段生命期，少一段都会闪：
+ * - 手指按着（committedAt === null）：进度每秒跟着 tick 重渲染，:value 若一直绑推算值，
+ *   滑块会在手指底下被拽回服务端那个位置；
+ * - 松手之后（committedAt 有值）：指令还在往返，对方的真实值仍是旧的。此时若立刻删掉草稿，
+ *   滑块会先掉回旧位置，等回执广播到了再跳回手指的位置 —— 就是那一下「闪回去又闪回来」。
+ *   所以草稿要留到「对方的真实值追上了它」或者等超时（对方没响应时的兜底）再撤。
  */
-const dragging = ref<Record<string, number>>({});
+interface SliderDraft {
+  deviceId: string;
+  kind: 'progress' | 'volume';
+  /** 被拖到的位置（进度为秒，音量为 0..1）。 */
+  value: number;
+  /** 松手提交的时刻；null = 手指还按着。 */
+  committedAt: number | null;
+  /** 提交时对方在放的曲目：换了歌，这条进度草稿就没意义了。 */
+  trackKey: string;
+}
+
+/** 松手后最多等这么久：对方执行完会立刻补报状态，正常几十毫秒，这里只是失败时的兜底。 */
+const SLIDER_ACK_MS = 1_200;
+/** 草稿落地检查的间隔：只是本地数值比较，不发请求。 */
+const SLIDER_SETTLE_MS = 100;
+/** 判定「真实值已追上草稿」的容差：进度 1.5 秒（回执往返的误差），音量半个步进。 */
+const PROGRESS_TOLERANCE_S = 1.5;
+const VOLUME_TOLERANCE = 0.006;
+
+const drafts = ref<Record<string, SliderDraft>>({});
+let settleTimer: number | undefined;
 
 function dragKey(device: ConnectDevice, kind: 'progress' | 'volume'): string {
   return `${device.deviceId}:${kind}`;
 }
 
+/** 不加草稿时，这台设备此刻的真实值。 */
+function realValueOf(device: ConnectDevice, kind: 'progress' | 'volume'): number {
+  return kind === 'volume' ? (device.state?.volume ?? 1) : connect.positionOf(device.state);
+}
+
+/** 草稿是否还代表「这一刻该显示的值」：设备还在、歌没换（只有进度在意换歌）。 */
+function draftApplies(draft: SliderDraft, device: ConnectDevice): boolean {
+  if (draft.kind === 'volume') return true;
+  return (device.state?.track?.key ?? '') === draft.trackKey;
+}
+
+/** 草稿什么时候可以放手。 */
+function draftSettled(draft: SliderDraft, device: ConnectDevice | null, now: number): boolean {
+  // 设备下线、或对方换了首歌：这条草稿已经没有意义了。
+  if (!device || !draftApplies(draft, device)) return true;
+  // 还按着：交给 input 事件，别在这里提前撤。
+  if (draft.committedAt === null) return false;
+  if (now - draft.committedAt > SLIDER_ACK_MS) return true;
+
+  const tolerance = draft.kind === 'volume' ? VOLUME_TOLERANCE : PROGRESS_TOLERANCE_S;
+  return Math.abs(realValueOf(device, draft.kind) - draft.value) <= tolerance;
+}
+
+function stopSettleTimer(): void {
+  if (settleTimer === undefined) return;
+  window.clearInterval(settleTimer);
+  settleTimer = undefined;
+}
+
+/** 把已经落地的草稿摘掉；摘干净了就不再轮询。 */
+function settleDrafts(): void {
+  const entries = Object.entries(drafts.value);
+  if (entries.length === 0) {
+    stopSettleTimer();
+    return;
+  }
+
+  const now = performance.now();
+  let changed = false;
+  const next: Record<string, SliderDraft> = {};
+
+  for (const [key, draft] of entries) {
+    const device = connect.devices.find((item) => item.deviceId === draft.deviceId) ?? null;
+    if (draftSettled(draft, device, now)) changed = true;
+    else next[key] = draft;
+  }
+
+  if (changed) drafts.value = next;
+  if (Object.keys(next).length === 0) stopSettleTimer();
+}
+
+function ensureSettleTimer(): void {
+  if (settleTimer !== undefined) return;
+  settleTimer = window.setInterval(settleDrafts, SLIDER_SETTLE_MS);
+}
+
 function sliderValue(device: ConnectDevice, kind: 'progress' | 'volume'): number {
-  const draft = dragging.value[dragKey(device, kind)];
-  if (draft !== undefined) return draft;
+  // 草稿优先：按着时就是手指的位置，松手后则是「等对方回执」的那个目标值。
+  const draft = drafts.value[dragKey(device, kind)];
+  if (draft && draftApplies(draft, device)) return draft.value;
+
   if (kind === 'volume') return device.state?.volume ?? 1;
+  // 读一下 tick：没拖的时候进度每秒都在走，滑块要跟着走，不能停在收到 devices 的那一刻。
+  void tick.value;
   return connect.positionOf(device.state);
 }
 
 function onSliderInput(device: ConnectDevice, kind: 'progress' | 'volume', event: Event): void {
   const value = Number((event.target as HTMLInputElement).value);
-  dragging.value = { ...dragging.value, [dragKey(device, kind)]: value };
+  // 拖动中只改本地草稿、不发指令：每移动一格发一次会把对方刷爆（松手才发）。
+  drafts.value = {
+    ...drafts.value,
+    [dragKey(device, kind)]: {
+      deviceId: device.deviceId,
+      kind,
+      value,
+      committedAt: null,
+      trackKey: device.state?.track?.key ?? '',
+    },
+  };
 }
 
-/** 松手才发指令：拖动过程中每移动一格就发一次会把对方刷爆。 */
+/** 松手才发指令，并把草稿留到对方回执之后再撤（否则会先闪回旧位置）。 */
 async function onSliderCommit(
   device: ConnectDevice,
   kind: 'progress' | 'volume',
   event: Event,
 ): Promise<void> {
+  const key = dragKey(device, kind);
   const value = Number((event.target as HTMLInputElement).value);
-  const next = { ...dragging.value };
-  delete next[dragKey(device, kind)];
-  dragging.value = next;
+
+  drafts.value = {
+    ...drafts.value,
+    [key]: {
+      deviceId: device.deviceId,
+      kind,
+      value,
+      committedAt: performance.now(),
+      trackKey: device.state?.track?.key ?? '',
+    },
+  };
+
+  // 值本来就在这儿（或者设备刚换了歌）：没什么可等的，立刻放掉。
+  settleDrafts();
+  if (drafts.value[key]) ensureSettleTimer();
 
   if (kind === 'volume') await connect.control(device.deviceId, 'volume', { volume: value });
   else await connect.control(device.deviceId, 'seek', { position: value });
 }
 
-function startRename(): void {
+async function startRename(): Promise<void> {
   draftName.value = connect.deviceName;
   renaming.value = true;
+  await nextTick();
+  nameInput.value?.select();
 }
 
 function commitRename(): void {
-  connect.rename(draftName.value);
+  const name = draftName.value.trim();
+  if (!name) return;
+  connect.rename(name);
   renaming.value = false;
 }
 </script>
@@ -264,7 +609,7 @@ function commitRename(): void {
     <button
       class="icon-btn"
       type="button"
-      :title="open ? '收起播放设备' : '播放设备'"
+      :title="open ? '收起在线设备' : '在线设备'"
       :class="{ 'is-active': open }"
       @click="open = !open"
     >
@@ -276,9 +621,9 @@ function commitRename(): void {
     <div v-if="open" class="device-panel" :class="[`is-${props.placement}`, `is-align-${props.align}`]">
       <header class="device-panel-head">
         <div class="stack" style="gap: 1px">
-          <strong style="font-size: 14px">播放设备</strong>
+          <strong style="font-size: 14px">在线设备</strong>
           <span class="muted" style="font-size: 11.5px">
-            {{ connect.connected ? `在线 ${connect.devices.length} 台` : '未连接（请检查登录状态）' }}
+            {{ connect.connected ? `共 ${connect.devices.length} 台` : '未连接（请检查登录状态）' }}
           </span>
         </div>
         <button class="icon-btn" type="button" title="关闭" @click="open = false">
@@ -299,18 +644,6 @@ function commitRename(): void {
         <span class="truncate">一起听进行中，设备跟随已暂停</span>
       </div>
 
-      <div v-if="renaming" class="row" style="gap: 6px">
-        <input
-          v-model="draftName"
-          class="input"
-          :maxlength="40"
-          placeholder="给这台设备起个名字"
-          style="flex: 1; min-width: 0"
-          @keyup.enter="commitRename"
-        />
-        <button class="btn btn-primary" type="button" @click="commitRename">确定</button>
-      </div>
-
       <div class="device-list">
         <p v-if="connect.devices.length === 0" class="muted device-empty">
           正在查找设备…（其它设备打开本页后会自动出现在这里）
@@ -318,7 +651,7 @@ function commitRename(): void {
 
         <!-- 一台设备一张卡片：信息分层、操作带文字，比全挤在一行里好认。 -->
         <section
-          v-for="device in connect.devices"
+          v-for="device in orderedDevices"
           :key="device.deviceId"
           class="device-card"
           :class="{ 'is-self': isSelf(device), 'is-following': connect.following === device.deviceId }"
@@ -343,19 +676,39 @@ function commitRename(): void {
             <!--
               播放键就放在原来「播放中 / 已暂停」的位置上：
               图标说明「点它会做什么」，文字说明「它现在怎么样」。
+              左右贴着上一首/下一首：三个键一起用，分开放反而要多找一次。
             -->
-            <button
-              v-else
-              class="btn device-transport"
-              :class="{ 'is-playing': device.state?.playing }"
-              type="button"
-              :disabled="!device.state?.track"
-              :title="device.state?.track ? controlHint(device) : `「${device.name}」没有在放歌`"
-              @click="togglePlay(device)"
-            >
-              <AppIcon :name="device.state?.playing ? 'pause' : 'play'" :size="12" filled />
-              {{ statusOf(device) }}
-            </button>
+            <span v-else class="row device-transport-group" style="gap: 2px">
+              <button
+                class="icon-btn device-skip"
+                type="button"
+                :disabled="!device.state?.track"
+                :title="`「${device.name}」上一首`"
+                @click="skip(device, 'prev')"
+              >
+                <AppIcon name="prev" :size="14" filled />
+              </button>
+              <button
+                class="btn device-transport"
+                :class="{ 'is-playing': device.state?.playing }"
+                type="button"
+                :disabled="!device.state?.track"
+                :title="device.state?.track ? controlHint(device) : `「${device.name}」没有在放歌`"
+                @click="togglePlay(device)"
+              >
+                <AppIcon :name="device.state?.playing ? 'pause' : 'play'" :size="12" filled />
+                {{ statusOf(device) }}
+              </button>
+              <button
+                class="icon-btn device-skip"
+                type="button"
+                :disabled="!device.state?.track"
+                :title="`「${device.name}」下一首`"
+                @click="skip(device, 'next')"
+              >
+                <AppIcon name="next" :size="14" filled />
+              </button>
+            </span>
           </header>
 
           <p class="muted truncate device-card-track" :title="trackLineOf(device)">
@@ -382,6 +735,9 @@ function commitRename(): void {
           <!--
             音量是**设备**自己的属性，与在放什么无关：它只是没在放歌，不代表不需要合适的响度，
             所以这一行不跟着「有内容」一起藏起来。
+
+            音量条因此不再吃满整行：行尾那两个图标（模式 / 播放列表）会分走一段宽度，
+            滑块自己缩到图标之前。
           -->
           <div v-if="!isSelf(device)" class="device-control">
             <span class="device-control-icon" :title="`调整「${device.name}」的音量`">
@@ -398,6 +754,36 @@ function commitRename(): void {
               @input="onSliderInput(device, 'volume', $event)"
               @change="onSliderCommit(device, 'volume', $event)"
             />
+
+            <!-- 行尾两个图标：左边的就是「它现在用的模式」，右边是它的播放列表。 -->
+            <button
+              class="icon-btn device-mini-btn"
+              :class="{
+                'is-active': float?.kind === 'mode' && float.deviceId === device.deviceId,
+              }"
+              type="button"
+              data-float-toggle
+              :title="modeHint(device)"
+              @click="toggleFloat('mode', device, $event)"
+            >
+              <AppIcon :name="modeIconOf(device)" :size="15" />
+            </button>
+            <button
+              class="icon-btn device-mini-btn"
+              :class="{
+                'is-active': float?.kind === 'queue' && float.deviceId === device.deviceId,
+              }"
+              type="button"
+              data-float-toggle
+              :title="
+                device.state?.queueLength
+                  ? `查看并调整「${device.name}」的播放列表（${device.state.queueLength} 首）`
+                  : `查看并调整「${device.name}」的播放列表`
+              "
+              @click="toggleFloat('queue', device, $event)"
+            >
+              <AppIcon name="list" :size="15" />
+            </button>
           </div>
 
           <!-- 远程操作：只对别的设备。空着的设备恰恰最需要这几个入口，所以不再要求它有内容。 -->
@@ -434,9 +820,176 @@ function commitRename(): void {
               播到这台
             </button>
           </div>
+
         </section>
       </div>
     </div>
+
+    <!--
+      浮层：模式菜单与播放列表共用，与播放条上那两个同一套长相。
+      Teleport 到 body 是为了躲开设备列表的 overflow 裁剪，位置由 toggleFloat 按按钮算。
+    -->
+    <Teleport to="body">
+      <!-- 播放模式：图标 + 名称 + 说明，选中的那行带勾 -->
+      <div
+        v-if="float?.kind === 'mode'"
+        ref="floatRef"
+        class="device-float device-float-mode"
+        :style="floatStyle"
+        role="listbox"
+      >
+        <button
+          v-for="item in MODE_ITEMS"
+          :key="item.mode"
+          class="device-mode-item"
+          :class="{ 'is-active': floatDevice?.state?.playMode === item.mode }"
+          type="button"
+          role="option"
+          :aria-selected="floatDevice?.state?.playMode === item.mode"
+          @click="selectMode(item.mode)"
+        >
+          <span class="device-mode-icon"><AppIcon :name="item.icon" :size="15" /></span>
+          <span class="stack" style="gap: 1px; align-items: flex-start; flex: 1">
+            <span style="font-weight: 650">{{ item.label }}</span>
+            <span class="muted device-mode-hint">{{ item.hint }}</span>
+          </span>
+          <AppIcon
+            v-if="floatDevice?.state?.playMode === item.mode"
+            name="check"
+            :size="14"
+            :stroke-width="2.6"
+          />
+        </button>
+      </div>
+
+      <!-- 播放列表：表头（哪台设备、多少首）+ 可滚动列表 + 底栏（追加本机当前） -->
+      <div
+        v-else-if="float?.kind === 'queue' && floatDevice"
+        ref="floatRef"
+        class="device-float device-float-queue"
+        :style="floatStyle"
+      >
+        <header class="device-float-head">
+          <span class="stack" style="gap: 1px; align-items: flex-start; min-width: 0">
+            <strong class="truncate device-float-title">「{{ floatDevice.name }}」的播放列表</strong>
+            <span class="muted device-float-sub">
+              共 {{ floatQueue?.queue.length ?? floatDevice.state?.queueLength ?? 0 }} 首<template
+                v-if="floatQueue && floatQueue.index >= 0"
+              >
+                · 正在播第 {{ floatQueue.index + 1 }} 首</template
+              >
+            </span>
+          </span>
+          <span class="row" style="gap: 2px; flex: none">
+            <button
+              class="icon-btn device-float-icon"
+              type="button"
+              title="重新读取对方的播放列表"
+              @click="refreshQueue"
+            >
+              <AppIcon name="refresh" :size="14" />
+            </button>
+            <button
+              class="icon-btn device-float-icon"
+              type="button"
+              title="收起"
+              @click="float = null"
+            >
+              <AppIcon name="close" :size="14" />
+            </button>
+          </span>
+        </header>
+
+        <div class="device-float-body">
+          <p v-if="!floatQueue" class="muted device-queue-empty">
+            正在读取对方的播放列表…（对方版本较旧时可能读不到）
+          </p>
+          <p v-else-if="floatQueue.queue.length === 0" class="muted device-queue-empty">
+            对方的播放列表是空的
+          </p>
+          <ol v-else class="device-queue-list">
+            <li v-for="(track, i) in floatQueue.queue" :key="`${track.key}-${i}`">
+              <div class="device-queue-row" :class="{ 'is-current': i === floatQueue.index }">
+                <button
+                  class="device-queue-play"
+                  type="button"
+                  :title="`让「${floatDevice.name}」播放「${track.title}」`"
+                  @click="playRemoteAt(i)"
+                >
+                  <span class="device-queue-index">{{ i + 1 }}</span>
+                  <span class="stack truncate" style="gap: 0; align-items: flex-start">
+                    <span class="truncate">{{ track.title }}</span>
+                    <span class="muted truncate device-queue-artist">{{ track.artists }}</span>
+                  </span>
+                </button>
+                <button
+                  class="icon-btn device-queue-remove"
+                  type="button"
+                  :title="`从「${floatDevice.name}」的播放列表移除「${track.title}」`"
+                  @click="removeRemoteAt(i)"
+                >
+                  <AppIcon name="close" :size="13" />
+                </button>
+              </div>
+            </li>
+          </ol>
+        </div>
+
+        <footer class="device-float-foot">
+          <button
+            class="btn device-queue-mini"
+            type="button"
+            :disabled="!player.current"
+            :title="
+              player.current
+                ? `把本机正在播放的「${player.current.title}」加到对方的播放列表`
+                : '本机没有在放歌'
+            "
+            @click="addCurrentToRemote"
+          >
+            ＋ 加入本机当前这首
+          </button>
+        </footer>
+      </div>
+    </Teleport>
+
+    <!-- 改名弹窗：面板里塞输入框会把列表挤下去，而且一滚动就跟着跑。 -->
+    <Teleport to="body">
+      <div v-if="renaming" ref="renameRef" class="modal-mask" @click.self="renaming = false">
+        <div class="modal">
+          <div class="between">
+            <h3 class="modal-title">给这台设备改名</h3>
+            <button class="icon-btn" type="button" title="关闭（Esc）" @click="renaming = false">
+              <AppIcon name="close" />
+            </button>
+          </div>
+
+          <label class="stack" style="gap: 6px; margin-top: 16px">
+            <span class="field-label">设备名称</span>
+            <input
+              ref="nameInput"
+              v-model="draftName"
+              class="input"
+              :maxlength="40"
+              placeholder="给这台设备起个名字"
+              @keyup.enter="commitRename"
+            />
+          </label>
+
+          <div class="row" style="justify-content: flex-end; gap: 8px; margin-top: 20px">
+            <button class="btn btn-ghost" type="button" @click="renaming = false">取消</button>
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="!draftName.trim()"
+              @click="commitRename"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -631,6 +1184,28 @@ function commitRename(): void {
  * 头部右侧的播放键。文字是状态、图标是动作，两者都省不得：
  * 光图标在手机上认不出来，光文字又少掉一个能点的地方。
  */
+.device-transport-group {
+  margin-left: auto;
+  flex: none;
+  gap: 2px;
+}
+
+/* 上一首 / 下一首：和播放键同一套描边，做成小一号的圆。 */
+.device-skip {
+  flex: none;
+  width: 27px;
+  height: 27px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-strong);
+  color: var(--text-soft);
+}
+
+.device-skip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .device-transport {
   margin-left: auto;
   flex: none;
@@ -703,6 +1278,231 @@ function commitRename(): void {
   color: var(--brand-600);
   border-color: var(--brand-300);
   background: var(--surface-hover);
+}
+
+/* 行尾的两个小图标按钮（把模式与播放列表收进音量行）：激活时点亮品牌色。 */
+.device-mini-btn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+}
+
+.device-mini-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.device-mini-btn.is-active {
+  color: var(--brand-600);
+  border-color: var(--brand-300);
+  background: var(--surface-hover);
+}
+
+/*
+ * 浮层底座：模式菜单与播放列表共用（Teleport 到 body，fixed 定位）。
+ *
+ * 视觉与播放条上那两个一致。面板是 z-index 45，浮层要浮在它之上，否则会钻到卡片底下。
+ */
+.device-float {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  box-shadow: var(--shadow-lg);
+  animation: pop-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.1) both;
+  overflow: hidden;
+}
+
+/* 模式菜单：宽度与脚本里的 MODE_MENU_W 一致（摆位要用）。 */
+.device-float-mode {
+  width: 208px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  overflow-y: auto;
+  /* 滚到头也别把滚动传给背后的页面：那会让面板跟着「背景滚了」一起收起。 */
+  overscroll-behavior: contain;
+}
+
+/* 播放列表：宽度与脚本里的 QUEUE_PANEL_W 一致；高度由可用空间封顶，列表在中间自己滚。 */
+.device-float-queue {
+  width: 272px;
+  max-width: calc(100vw - 16px);
+}
+
+.device-float-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 9px 8px 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.device-float-title {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.device-float-sub {
+  font-size: 11px;
+}
+
+.device-float-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+}
+
+.device-float-icon:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.device-float-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 同 .device-float-mode：滚到头不再传给背后的页面。 */
+  overscroll-behavior: contain;
+}
+
+.device-float-foot {
+  flex: none;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* 底栏那个「加入本机当前」占满整行，像个明确的收尾动作。 */
+.device-float-foot .device-queue-mini {
+  width: 100%;
+  padding: 5px 8px;
+}
+
+.device-mode-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: var(--text);
+  font-size: 12.5px;
+  transition: background 0.16s ease;
+}
+
+.device-mode-item:hover {
+  background: var(--surface-hover);
+}
+
+.device-mode-item.is-active {
+  color: var(--brand-600);
+  background: linear-gradient(135deg, rgba(var(--brand-rgb), 0.16), rgba(var(--brand-rgb), 0.06));
+}
+
+.device-mode-icon {
+  display: inline-flex;
+  justify-content: center;
+  width: 20px;
+  color: var(--text-soft);
+}
+
+.device-mode-item.is-active .device-mode-icon {
+  color: var(--brand-600);
+}
+
+.device-mode-hint {
+  font-size: 11px;
+}
+
+.device-queue-mini {
+  flex: none;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.device-queue-mini:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.device-queue-empty {
+  margin: 0;
+  padding: 12px;
+  font-size: 11.5px;
+}
+
+/* 滚动交给浮层的 body：列表本身只负责排布。 */
+.device-queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.device-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.device-queue-row + .device-queue-row {
+  border-top: 1px solid var(--border);
+}
+
+/* 正在播的那一行：左缘一道竖线，扫一眼就知道它放到哪了。 */
+.device-queue-row.is-current {
+  box-shadow: inset 2px 0 0 var(--brand-600);
+}
+
+.device-queue-play {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  text-align: left;
+  color: var(--text);
+  font-size: 12px;
+  transition: background 0.16s ease;
+}
+
+.device-queue-play:hover {
+  background: var(--surface-hover);
+}
+
+.device-queue-row.is-current .device-queue-play {
+  color: var(--brand-600);
+}
+
+.device-queue-index {
+  flex: none;
+  width: 18px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-mute);
+}
+
+.device-queue-artist {
+  font-size: 10.5px;
+}
+
+.device-queue-remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
 }
 
 .device-badge {
@@ -805,6 +1605,31 @@ function commitRename(): void {
   /* 细滑块在手指上不好按：命中区加高，轨道粗细不变。 */
   .device-slider {
     height: 24px;
+  }
+
+  /* 模式菜单与队列行同理：按手指的尺寸来。 */
+  .device-mode-item {
+    padding: 10px 9px;
+  }
+
+  .device-mini-btn,
+  .device-skip {
+    width: 32px;
+    height: 32px;
+  }
+
+  .device-queue-play {
+    padding: 8px 7px;
+  }
+
+  .device-queue-remove {
+    width: 30px;
+    height: 30px;
+  }
+
+  .device-float-icon {
+    width: 30px;
+    height: 30px;
   }
 }
 </style>

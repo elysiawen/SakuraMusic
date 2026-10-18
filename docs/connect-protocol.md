@@ -10,6 +10,13 @@
 
 ## 最近更新
 
+> **2026-10-18** —— 控制端可以遥控对方的**播放模式**与**播放列表**了：
+>
+> - 播放状态新增 `playMode`（`order` / `all` / `one` / `shuffle`），控制端据此高亮对方当前的模式；
+> - 新增 `mode`、`playAt`、`remove`、`add` 四条指令（见 7.1 与 7.6）；
+> - 播放列表**不进**状态广播（体积太大），改成按需索取：控制端发 `queue`，对方回 `queueState`；
+> - 老客户端忽略这些新指令即可：不认识 `action` 时直接忽略，控制端会显示「未知模式 / 读不到列表」。
+
 > **2026-10-07** —— `quality` 字段的取值范围从 4 档扩到 7 档：
 >
 > - 新增 `spatial`（高清臻音）、`master`（超清母带）、`surround`（沉浸环绕声），两个平台都有这三档；
@@ -173,7 +180,8 @@ data: <JSON>
     "quality": "high",
     "outputLatencyMs": 0,
     "rate": 1,
-    "queueLength": 3
+    "queueLength": 3,
+    "playMode": "all"
   }
 }
 ```
@@ -277,6 +285,7 @@ Content-Type: application/json
 | `outputLatencyMs` | number | 本机音频输出延迟估算（毫秒）。`0` = 未测出，跟随端不作补偿 | 0 ~ 5000，四舍五入到整数 |
 | `rate` | number | 本机播放速率（为追平微调时不是 1），诊断用 | 夹取到 0.5 ~ 2 |
 | `queueLength` | number | 队列条数，仅供显示 | 0 ~ 10000，四舍五入到整数 |
+| `playMode` | string \| 省略 | 播放模式：`order` / `all` / `one` / `shuffle`（见 7.6） | 认不出的取值当作没报（`undefined`） |
 | `following` | string \| 省略 | 本机正在跟随谁（对端 `deviceId`） | ≤ 64 字符；空串记作省略 |
 
 字符串按**字符**截断而不是报错——宁可少显示几个字，也不要让一条状态把整台设备卡住。
@@ -292,6 +301,7 @@ Content-Type: application/json
 | 时机 | 说明 |
 |---|---|
 | 播放 / 暂停、换歌、队列长度变化 | **立即**上报 |
+| 播放模式变化 | **立即**上报（控制端的面板据此高亮） |
 | 拖动进度条（播放中与暂停中都要） | **立即**上报 |
 | 执行完远程指令 | **立即**补报 |
 | 播放进度 | **完全不报** —— 控制端按 `positionAt` 自己推算（见 6.4） |
@@ -399,6 +409,12 @@ Content-Type: application/json
 | `unfollow` | 撤销上一条 | 无 |
 | `transfer` | 接管播放：载入队列并定位 | `{ "queue": [...], "index": 0, "position": 12.4 }` |
 | `release` | 把队列交出去并停下自己 | 无（对端随后以 `transfer` 回传） |
+| `mode` | 切换那台设备的播放模式 | `{ "mode": "shuffle" }` |
+| `playAt` | 播放它播放列表里的第 N 首 | `{ "index": 3 }` |
+| `remove` | 从它播放列表里移除第 N 首 | `{ "index": 3 }` |
+| `add` | 往它播放列表末尾追加一首 | `{ "track": { … } }` |
+| `queue` | 要一份它的播放列表快照 | 无 |
+| `queueState` | `queue` 的应答（由被请求的那台回传） | `{ "queue": [...], "index": 0 }` |
 
 不在表里的 action 一律 `400 unknown_action` —— 服务端是白名单转发，不是透传。
 
@@ -516,6 +532,47 @@ Content-Type: application/json
 
 还有两个容易忘的收尾：结束跟随时、以及连接断开时，都要把 `playbackRate` 复位为 1，否则会留下一个"莫名其妙快/慢几个百分点"的播放器。
 
+### 7.6 遥控播放模式与播放列表
+
+**播放模式**是目标设备自己的状态，走一条普通指令：
+
+```json
+POST /api/connect/command
+{ "deviceId": "本机", "target": "对方", "action": "mode", "payload": { "mode": "shuffle" } }
+```
+
+对方用本地的「设置播放模式」方法执行，然后立刻补报；`state.playMode` 随之更新。四种取值与「一首播完往哪走」的关系：
+
+| 取值 | 播完一首后 |
+|---|---|
+| `order` | 下一首；到队尾停下 |
+| `all` | 下一首；到队尾回到第一首 |
+| `one` | 原地重播当前这首 |
+| `shuffle` | 随机跳到另一首 |
+
+`state.playMode` 缺省（老客户端没报）时，控制端应显示为**未知**，而不是假称 `order`。
+
+**播放列表**体积大（每首带取流坐标），不放进每次变化都要全量广播的 `devices` 事件，改按需索取：
+
+```
+控制端 ── command { action: "queue" } ──▶ 对方
+控制端 ◀── command { from: 对方, action: "queueState", payload: { queue, index } } ── 对方
+```
+
+- `queue` 用的是控制指令通道，`from` 就是应答要发回的收件人；被请求方漏了 `from` 的话，控制端永远收不到列表。
+- `queueState.queue` 的结构与 `transfer.payload.queue` 相同（见第 9 节），**最多 200 首**：整条 payload 受 512 KB 上限约束，超了会被网关拒掉。
+- `queueState` 只是一个数据应答，**不需要**再补报状态（它没改变任何播放状态）。
+
+三个写操作，`index` 一律是**对方队列**的下标（从 0 开始），不是控制端自己的队列：
+
+| action | payload | 语义 |
+|---|---|---|
+| `playAt` | `{ "index": 3 }` | 从第 4 首开始播（队列不变） |
+| `remove` | `{ "index": 3 }` | 移除第 4 首；移的正好是当前这首时，对方接着播下一首 |
+| `add` | `{ "track": { … } }` | 追加到队尾；对方已有同一 `key` 时会拒绝（由它自己提示） |
+
+写完**重新要一次** `queue`：协议里没有「列表变了」这种增量事件，控制端手里那份只是某一刻的快照。
+
 ---
 
 ## 8. 接管播放的完整时序（重点）
@@ -622,6 +679,7 @@ A：载入队列、从 position 继续播放
 - **SSE**：用 `okhttp-sse` 的 `EventSource`，或手写流式读取。注意给这个 OkHttpClient 配上比普通请求更长的读超时。
 - **指令处理要落在 Service 侧**：播放器活在 `MusicPlaybackService`（Media3 `MediaSessionService`）里，界面只是个遥控器。若把指令处理写在 ViewModel 里，用户退到后台就无法被其它设备操控了。
 - **状态上报**从 `Player.Listener` 取：`onIsPlayingChanged`、`onMediaItemTransition`、`onPlaybackStateChanged` 时立即上报。**不要**加周期性上报 —— 进度由控制端推算。注意 Media3 不会为 seek 单独回调，所以要在包装 `Player.seekTo()` 的地方主动补报一次，或按 6.5 做偏差检测。
+- **模式与播放列表的遥控**（7.6）已经接上：`ConnectSync` 在状态里上报 `playMode`（来自 `PlaybackCenter.playMode`），处理 `mode` / `playAt` / `remove` / `add` / `queue` / `queueState`；`queue` 的应答把本机队列映射成 `TrackSummary`，最多 200 首。`DeviceControlSheet` 里是四段式模式选择 + 可展开的播放列表。
 - 连接的生命周期建议挂在 Application 级（收到登录态变化时启停），不要挂在 Activity。
 
 ### Windows
@@ -647,7 +705,7 @@ A：载入队列、从 position 继续播放
 - [ ] 兜底：偏差检测（覆盖拖动进度条与音频卡顿）
 - [ ] 跟随：本地节拍驱动 + 比例速率控制（别只在广播时比对，也别把 seek 阈值设到秒级）
 - [ ] 跟随：按 `activePlatform` / `quality` 锁定音源；目标缺席留 10~15 秒宽限期
-- [ ] 处理全部 8 个 action
+- [ ] 处理第 7.1 节的全部 action（播放控制 / 跟随 / 接管 是必需的，`mode` 与播放列表那几条可选 —— 不实现只是遥控端读不到）
 - [ ] `transfer`：载入队列（含 `sources` 映射）并从 `position` 继续
 - [ ] `release`：暂停自己，并用 `command.from` 当收件人回传 `transfer`
 - [ ] 执行完指令立即补报状态

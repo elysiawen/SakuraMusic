@@ -115,6 +115,16 @@ export const usePlayerStore = defineStore('player', () => {
     lastFailure.value = { key, kind, at: Date.now() };
   }
 
+  /** 本会话里确定性播不了的歌：切歌时跳过，别卡在它身上。 */
+  const unplayableKeys = new Set<string>();
+
+  /** 刚试的这首是不是「确定性播不了」，切歌循环据此决定要不要继续往后试。 */
+  function failedUnplayable(key: string | undefined): boolean {
+    if (!key || !error.value) return false;
+    const failure = lastFailure.value;
+    return failure?.kind === 'unplayable' && failure.key === key;
+  }
+
   /**
    * 「一曲播完」的接管口。
    *
@@ -253,6 +263,9 @@ export const usePlayerStore = defineStore('player', () => {
    * 否则先发后到的那次会把新歌的 src 覆盖成旧歌（点得快时表现为「播的不是点的那首」）。
    */
   let loadToken = 0;
+
+  /** 音频元素上**当前真的装着**的那首（解析失败时它还是上一首）。 */
+  let loadedKey: string | null = null;
 
   const current = computed<UnifiedTrack | null>(() => queue.value[index.value] ?? null);
   const activeSource = computed<TrackSource | null>(() =>
@@ -511,8 +524,33 @@ export const usePlayerStore = defineStore('player', () => {
     return element;
   }
 
+  /** 浏览器媒体控件（Chrome 媒体中心、系统媒体键）的按钮。只登记一次。 */
+  let mediaSessionReady = false;
+  function setupMediaSession(): void {
+    if (!('mediaSession' in navigator) || mediaSessionReady) return;
+    mediaSessionReady = true;
+    const session = navigator.mediaSession;
+    const bind = (action: MediaSessionAction, handler: MediaSessionActionHandler): void => {
+      try {
+        session.setActionHandler(action, handler);
+      } catch {
+        // 个别浏览器只支持一部分动作。
+      }
+    };
+    bind('play', () => play());
+    bind('pause', () => pause());
+    bind('previoustrack', () => void prev());
+    bind('nexttrack', () => void next());
+  }
+
+  watch(playing, (value) => {
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = value ? 'playing' : 'paused';
+  });
+
   function updateMediaSession(track: UnifiedTrack | null): void {
-    if (!('mediaSession' in navigator) || !track) return;
+    if (!('mediaSession' in navigator)) return;
+    setupMediaSession();
+    if (!track) return;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artists.map((item) => item.name).join(' / '),
@@ -588,6 +626,30 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  /**
+   * 起播失败时退回元素上还在响的那一首。
+   *
+   * 地址没解析出来时音频元素根本没被换过，上一首还在放；界面却已经切到了新歌。
+   */
+  function revertToLoaded(): void {
+    const element = ensureAudio();
+    const at = loadedKey ? queue.value.findIndex((item) => item.key === loadedKey) : -1;
+    if (at >= 0) {
+      index.value = at;
+      currentTime.value = element.currentTime;
+      duration.value = Number.isFinite(element.duration) ? element.duration : 0;
+      playing.value = !element.paused;
+      return;
+    }
+    // 旧歌已经不在队列里（整条队列被换掉）：只能停下，别让声音和界面各说各的。
+    element.pause();
+    element.removeAttribute('src');
+    element.load();
+    playing.value = false;
+    currentTime.value = 0;
+    duration.value = 0;
+  }
+
   /** 真正发起播放：解析地址 → 设置 src → 播放。 */
   async function start(): Promise<void> {
     const track = current.value;
@@ -596,6 +658,8 @@ export const usePlayerStore = defineStore('player', () => {
     if (!source) {
       error.value = '该歌曲没有可用的音源';
       markFailure(track.key, 'unplayable');
+      unplayableKeys.add(track.key);
+      revertToLoaded();
       toast.error(error.value);
       return;
     }
@@ -613,6 +677,8 @@ export const usePlayerStore = defineStore('player', () => {
      */
     resolvingSource = true;
     const token = ++loadToken;
+    // 元素是否已被换成本次这首：换过之后失败就是「新歌放不了」，不能退回上一首。
+    let srcSwapped = false;
     try {
       const result = await musicApi.resolvePlay(source.platform, source.id, quality.value);
       // 这次解析已被更晚的一次切歌取代：交给它落地，别再动音频元素。
@@ -621,6 +687,8 @@ export const usePlayerStore = defineStore('player', () => {
       if (!result.url) {
         error.value = '该歌曲没有可用的播放地址';
         markFailure(track.key, 'unplayable');
+        unplayableKeys.add(track.key);
+        revertToLoaded();
         toast.error(error.value);
         return;
       }
@@ -648,6 +716,8 @@ export const usePlayerStore = defineStore('player', () => {
       directFallback = mode === 'auto' ? { proxy: result.url, platform: source.platform } : null;
 
       element.src = useDirect && result.direct ? result.direct.url : result.url;
+      srcSwapped = true;
+      loadedKey = track.key;
       element.volume = volume.value;
       element.muted = muted.value;
       trial.value = result.trial;
@@ -686,6 +756,8 @@ export const usePlayerStore = defineStore('player', () => {
 
       await element.play();
       playing.value = true;
+      // 这次起来了：先前记下的「播不了」作废（换音源、换档位后再试就该正常）。
+      unplayableKeys.delete(track.key);
       if (result.trial) {
         toast.info('该曲目仅能获取试听片段（受版权或会员限制），可尝试在播放条切换音源');
       }
@@ -701,9 +773,13 @@ export const usePlayerStore = defineStore('player', () => {
         return;
       }
       const message = caught instanceof Error ? caught.message : '播放失败';
+      const kind = classifyResolveError(caught);
       error.value = message;
-      playing.value = false;
-      markFailure(track.key, classifyResolveError(caught));
+      markFailure(track.key, kind);
+      if (kind === 'unplayable') unplayableKeys.add(track.key);
+      // 元素还没换成新歌：上一首仍在响，界面得跟着退回去。
+      if (srcSwapped) playing.value = false;
+      else revertToLoaded();
       toast.error(message);
     } finally {
       // 已被更晚的一次加载接手时，这两个状态归它管。
@@ -745,25 +821,42 @@ export const usePlayerStore = defineStore('player', () => {
     await start();
   }
 
-  async function next(auto = false): Promise<void> {
-    if (queue.value.length === 0) return;
+  /** 往后挪一首；队尾且不循环时返回 false。 */
+  function advance(auto: boolean): boolean {
     if (shuffle.value && queue.value.length > 1) {
-      let nextIndex = index.value;
-      while (nextIndex === index.value) {
-        nextIndex = Math.floor(Math.random() * queue.value.length);
-      }
-      index.value = nextIndex;
+      let at = index.value;
+      while (at === index.value) at = Math.floor(Math.random() * queue.value.length);
+      index.value = at;
     } else if (index.value < queue.value.length - 1) {
       index.value += 1;
     } else if (repeat.value === 'all' || !auto) {
       index.value = 0;
     } else {
-      playing.value = false;
-      return;
+      return false;
     }
-    pendingSeek = 0;
-    currentTime.value = 0;
-    await start();
+    return true;
+  }
+
+  /**
+   * 切到下一首。
+   *
+   * 这次起播确定性失败（没音源 / 版权限制）就继续往后试，最多绕队列一圈：
+   * 起播失败会退回上一首，如果不跳过，点「下一首」只会原地打转。
+   */
+  async function next(auto = false): Promise<void> {
+    if (queue.value.length === 0) return;
+    for (let guard = 0; guard < queue.value.length; guard += 1) {
+      if (!advance(auto)) {
+        playing.value = false;
+        return;
+      }
+      const key = queue.value[index.value]?.key;
+      if (key && unplayableKeys.has(key)) continue;
+      pendingSeek = 0;
+      currentTime.value = 0;
+      await start();
+      if (!failedUnplayable(key)) return;
+    }
   }
 
   async function prev(): Promise<void> {
@@ -772,10 +865,15 @@ export const usePlayerStore = defineStore('player', () => {
       seek(0);
       return;
     }
-    index.value = index.value > 0 ? index.value - 1 : queue.value.length - 1;
-    pendingSeek = 0;
-    currentTime.value = 0;
-    await start();
+    for (let guard = 0; guard < queue.value.length; guard += 1) {
+      index.value = index.value > 0 ? index.value - 1 : queue.value.length - 1;
+      const key = queue.value[index.value]?.key;
+      if (key && unplayableKeys.has(key)) continue;
+      pendingSeek = 0;
+      currentTime.value = 0;
+      await start();
+      if (!failedUnplayable(key)) return;
+    }
   }
 
   /**
@@ -973,6 +1071,7 @@ export const usePlayerStore = defineStore('player', () => {
     element.removeAttribute('src');
     // 只重置媒体元素状态，不触发 error 事件处理（error 监听里已对空 src 做了短路）。
     element.load();
+    loadedKey = null;
     playing.value = false;
     loading.value = false;
     // 现场都清空了，没什么可续播的。
@@ -989,6 +1088,9 @@ export const usePlayerStore = defineStore('player', () => {
     actualQuality.value = null;
     stop();
   }
+
+  // 起播前就登记好：媒体控件的按钮是按登记时的动作表生成的。
+  setupMediaSession();
 
   return {
     queue,

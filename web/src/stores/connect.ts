@@ -7,8 +7,10 @@ import {
   type ConnectCommandPayload,
   type ConnectDevice,
   type ConnectDeviceKind,
+  type ConnectPlayMode,
   type ConnectPlaybackState,
   type ConnectStateInput,
+  type ConnectTrackSnapshot,
 } from '@/api/connect';
 import type { UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
@@ -45,6 +47,24 @@ const LEADER_GRACE_MS = 15_000;
 const VOLUME_REPORT_DEBOUNCE_MS = 300;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
+/** 向对方要播放列表的最短间隔：面板反复开合不该变成请求洪流。 */
+const QUEUE_ASK_GAP_MS = 1_500;
+/** 遥控改了对方队列之后，等它落地再要最新那份（太快会拿到改之前的）。 */
+const QUEUE_REFRESH_DELAY_MS = 400;
+/**
+ * 对方队列在控制端最多缓存多少首。
+ *
+ * 队列要经网关转发一次，而指令 payload 的上限是 512KB；每首都带取流坐标，
+ * 截到 200 首与「一起听」的房间队列是同一量级，够显示也够操作。
+ */
+const REMOTE_QUEUE_MAX = 200;
+
+/** 允许远程切换的播放模式，与播放器那四种同一套。 */
+const PLAY_MODES: readonly ConnectPlayMode[] = ['order', 'all', 'one', 'shuffle'];
+
+function isPlayMode(value: unknown): value is ConnectPlayMode {
+  return typeof value === 'string' && (PLAY_MODES as readonly string[]).includes(value);
+}
 // 同步相关的阈值（SYNC_SEEK_S / SYNC_TRIM_S / TRIM_RATE）与 livePosition 见 @/utils/sync
 // ——「一起听」房间用的是同一套。
 
@@ -224,6 +244,8 @@ export const useConnectStore = defineStore('connect', () => {
       volume: player.volume,
       quality: player.quality,
       queueLength: player.queue.length,
+      // 播放模式也报上去：别的设备据此显示、并能远程切换它（顺序 / 列表循环 / 单曲 / 随机）。
+      playMode: player.playMode,
       // 让别的设备看得到「本机在跟着谁」，被跟随的一方才能确认对方跟上了。
       following: following.value ?? undefined,
     };
@@ -267,6 +289,8 @@ export const useConnectStore = defineStore('connect', () => {
           player.current?.key ?? '',
           player.index,
           player.queue.length,
+          // 模式一变也要广播：遥控端的面板据此高亮「它现在用的是哪种」。
+          player.playMode,
           // 跟随关系一变也要立刻广播：对方正是靠它来确认「你已经在跟着我了」。
           following.value ?? '',
         ].join('|'),
@@ -360,6 +384,8 @@ export const useConnectStore = defineStore('connect', () => {
 
   function applyDevices(payload: { devices?: ConnectDevice[]; serverNow?: number } | null): void {
     devices.value = Array.isArray(payload?.devices) ? payload.devices : [];
+    // 设备下线后它那份播放列表缓存就没用了：留着的话，它重新上线时会先闪一屏旧队列。
+    pruneRemoteQueues();
     // 这个差值里含着单程网络延迟（通常几十毫秒），可以忽略。
     if (typeof payload?.serverNow === 'number') clockOffsetMs = payload.serverNow - Date.now();
   }
@@ -438,6 +464,9 @@ export const useConnectStore = defineStore('connect', () => {
     baseline = null;
     leaderMissingSince = null;
     following.value = null;
+    // 设备列表清空了，按设备缓存的播放列表也一并作废。
+    remoteQueues.value = {};
+    queueAskedAt.clear();
     // 同理：断开时把追赶速率复位，免得下次播放莫名其妙快/慢几个百分点。
     usePlayerStore().setPlaybackRate(1);
 
@@ -487,6 +516,154 @@ export const useConnectStore = defineStore('connect', () => {
     ackTimers.add(timer);
   }
 
+  // ---- 遥控对方的播放列表 ----
+
+  /** 控制端缓存的一份对方队列快照（`queue` 请求的应答）。 */
+  interface RemoteQueue {
+    /** 对方队列的前 [REMOTE_QUEUE_MAX] 首。 */
+    queue: ConnectTrackSnapshot[];
+    /** 应答那一刻对方正在播的下标。 */
+    index: number;
+    /** 收到时刻（本地时钟）。 */
+    at: number;
+  }
+
+  /**
+   * 按 deviceId 缓存的对方播放列表。
+   *
+   * 为什么不把队列塞进播放状态里：状态是「任何变化都全量广播」的，而队列体积大
+   * （每首都带取流坐标），塞进去等于每播一下暂停就重发几十上百 KB。所以改成按需索取：
+   * 打开某台设备的列表时发一条 `queue`，对方用 `queueState` 回传一份。
+   */
+  const remoteQueues = ref<Record<string, RemoteQueue>>({});
+  /** 每台设备上一次「要队列」的时刻，用来给反复开合的面板去重。 */
+  const queueAskedAt = new Map<string, number>();
+
+  function pruneRemoteQueues(): void {
+    const alive = new Set(devices.value.map((item) => item.deviceId));
+    const next: Record<string, RemoteQueue> = {};
+    let dropped = false;
+    for (const [id, entry] of Object.entries(remoteQueues.value)) {
+      if (alive.has(id)) next[id] = entry;
+      else dropped = true;
+    }
+    if (dropped) remoteQueues.value = next;
+  }
+
+  /**
+   * 发一条控制指令，只关心网关有没有接住。
+   *
+   * 与 [control] 的区别：不弹错、不挂「对方到底响应了没有」的送达确认 ——
+   * 后台拉一次队列这类动作，不该因为对方刚好离线就冒一句提示。
+   */
+  async function send(
+    target: string,
+    action: ConnectAction,
+    payload?: ConnectCommandPayload,
+  ): Promise<boolean> {
+    if (!target) return false;
+    try {
+      await connectApi.command({ deviceId: deviceId.value, target, action, payload });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 向某台设备要一份播放列表快照。 */
+  async function requestQueue(target: string, force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - (queueAskedAt.get(target) ?? 0) < QUEUE_ASK_GAP_MS) return;
+    queueAskedAt.set(target, now);
+    await send(target, 'queue');
+  }
+
+  /**
+   * 遥控对方的播放列表：跳播 / 移除 / 追加。
+   *
+   * 本地缓存先按意图就地改掉（点下去马上有反馈），随后再向对方要一份最新的对齐 ——
+   * 乐观更新只是为了不让人干等一个往返，最终仍以对方回传的那份为准。
+   */
+  async function controlQueue(
+    target: string,
+    action: 'playAt' | 'remove' | 'add',
+    payload: ConnectCommandPayload,
+  ): Promise<boolean> {
+    const ok = await send(target, action, payload);
+    if (!ok) {
+      toast.info('对方没有响应，可能已离线');
+      return false;
+    }
+
+    const cached = remoteQueues.value[target];
+    if (cached) {
+      const queue = [...cached.queue];
+      let index = cached.index;
+      if (action === 'playAt') {
+        const at = Number(payload.index);
+        if (Number.isInteger(at) && at >= 0 && at < queue.length) index = at;
+      } else if (action === 'remove') {
+        const at = Number(payload.index);
+        if (Number.isInteger(at) && at >= 0 && at < queue.length) {
+          queue.splice(at, 1);
+          if (at < index) index -= 1;
+          else if (at === index) index = Math.min(index, queue.length - 1);
+        }
+      } else if (action === 'add' && payload.track) {
+        // 同一首已经在对方队列里时对方会拒绝，这里不猜它的结果：等 400ms 后的刷新对齐。
+        queue.push(toRemoteTrack(payload.track as UnifiedTrack));
+      }
+      remoteQueues.value = { ...remoteQueues.value, [target]: { queue, index, at: Date.now() } };
+    }
+
+    window.setTimeout(() => void requestQueue(target, true), QUEUE_REFRESH_DELAY_MS);
+    return true;
+  }
+
+  /**
+   * 把本地曲目裁成「对方看列表需要的那几个字段」。
+   *
+   * `UnifiedTrack` 里还带着档位清单、尺寸之类的东西，整份发过去会白白撑大 payload
+   * （网关对指令有 512KB 上限）。对方拿这份列表只是为了显示与点选，真正播放用的是
+   * **它自己队列里的那一份**，所以这里只留展示字段与取流坐标。
+   */
+  function toRemoteTrack(track: UnifiedTrack): ConnectTrackSnapshot {
+    return {
+      key: track.key,
+      title: track.title,
+      artists: track.artists.map((item) => item.name).join(' / '),
+      album: track.album.name,
+      cover: track.album.cover ?? null,
+      durationMs: track.durationMs,
+      sources: track.sources,
+      vip: track.vip,
+    };
+  }
+
+  /** `queue` 请求的应答：把本机队列回传给请求方。 */
+  async function replyQueue(target: string): Promise<void> {
+    const player = usePlayerStore();
+    await send(target, 'queueState', {
+      queue: player.queue.slice(0, REMOTE_QUEUE_MAX).map(toRemoteTrack),
+      index: player.index,
+    });
+  }
+
+  /** 记下收到的队列快照。 */
+  function rememberQueue(from: string, data: ConnectCommandPayload): void {
+    if (!from) return;
+    const queue = Array.isArray(data.queue) ? (data.queue as ConnectTrackSnapshot[]) : [];
+    const index = Number(data.index);
+    remoteQueues.value = {
+      ...remoteQueues.value,
+      [from]: {
+        queue: queue.slice(0, REMOTE_QUEUE_MAX),
+        index: Number.isInteger(index) ? index : 0,
+        at: Date.now(),
+      },
+    };
+  }
+
   /**
    * 执行别的设备发来的指令。
    *
@@ -500,6 +677,19 @@ export const useConnectStore = defineStore('connect', () => {
   ): Promise<void> {
     const player = usePlayerStore();
     const data = (payload ?? {}) as ConnectCommandPayload;
+
+    /*
+     * 队列快照的往返既不碰播放器、也不改变任何状态，所以不进下面那段「执行 → 补报」：
+     * 一次列表请求不该再触发一轮 devices 全量广播。
+     */
+    if (action === 'queueState') {
+      rememberQueue(from, data);
+      return;
+    }
+    if (action === 'queue') {
+      await replyQueue(from);
+      return;
+    }
 
     try {
       switch (action) {
@@ -554,6 +744,32 @@ export const useConnectStore = defineStore('connect', () => {
         case 'volume': {
           const volume = Number(data.volume);
           if (Number.isFinite(volume)) player.setVolume(volume);
+          break;
+        }
+
+        /*
+         * 播放模式。一起听进行中时本机的模式是**房间共享**的，房间的下一帧会把这里
+         * 改回去——那是对的：控制端看到它弹回来就明白「该去房间里改」。
+         */
+        case 'mode': {
+          if (isPlayMode(data.mode)) player.setPlayMode(data.mode);
+          break;
+        }
+
+        case 'playAt': {
+          const index = Number(data.index);
+          if (Number.isInteger(index)) await player.playAt(index);
+          break;
+        }
+
+        case 'remove': {
+          const index = Number(data.index);
+          if (Number.isInteger(index)) player.removeFromQueueAt(index);
+          break;
+        }
+
+        case 'add': {
+          if (data.track) player.addToQueue(data.track as UnifiedTrack);
           break;
         }
 
@@ -796,6 +1012,12 @@ export const useConnectStore = defineStore('connect', () => {
     report,
     control,
     takeOver,
+    /** 按 deviceId 缓存的对方播放列表（`queue` 请求的应答）。 */
+    remoteQueues,
+    /** 向某台设备要一份播放列表快照（面板展开时调用）。 */
+    requestQueue,
+    /** 遥控对方的播放列表：跳播 / 移除 / 追加。 */
+    controlQueue,
     /** 正在跟随的设备 id（null = 没在跟随）。 */
     following,
     follow,

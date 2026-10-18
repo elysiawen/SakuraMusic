@@ -24,6 +24,13 @@ type PlayerStore = ReturnType<typeof usePlayerStore>;
 
 /** 本地镜像的比对节拍：纯本地数值比较，不产生任何请求。 */
 const SYNC_TICK_MS = 200;
+/**
+ * 判定「已经走到曲尾」的容差（秒）。
+ *
+ * 房间给的曲长来自曲目元数据（`durationMs`），音频元素解出来的是实际时长，两者常差
+ * 零点几秒；容差取比一个节拍宽一点，就够把「本机已放完」与「还差一截」分开。
+ */
+const END_GUARD_S = 0.5;
 
 /**
  * 记住当前房间码。
@@ -258,6 +265,9 @@ export const useRoomStore = defineStore('room', () => {
     try {
       await roomApi.act({ deviceId: useConnectStore().deviceId, action, payload });
     } catch (error) {
+      // 房间已经不在服务端了（网关重启 / 被解散 / 席位已过期）：本地收尾，
+      // 别让镜像节拍继续拿一份再也不会更新的播放态去拽播放器。
+      if (handleRoomGone(error)) return;
       if (!quiet) toast.error(error instanceof Error ? error.message : '操作失败');
     }
   }
@@ -384,10 +394,35 @@ export const useRoomStore = defineStore('room', () => {
     }
 
     // 同一首：先对齐播放态，再收拾进度偏差。
+    const expected = livePosition(state, clockOffsetMs);
+
+    /*
+     * 曲尾守卫。
+     *
+     * 房间说「在播」、推算位置也到了曲尾，而本机同样停在曲尾——这一首其实已经放完了：
+     * `ended` 已交给房间，正等服务端把「往哪走」推回来。
+     *
+     * 此时若还照房间的「在播」去 `play()`，音频会从 0 重新开始，下一拍又因为偏差过大被
+     * `seek` 回曲尾，再 `ended`、再 `play`……进度条就在最左与最右之间反复抽搐。
+     *
+     * 而服务端一旦把内存里的房间丢了（网关重启），那份播放态就**永远停在「在播」**、
+     * 位置随推算爬到曲尾不再变化，上述抽搐也就停不下来——这正是「重启服务端后，一起听
+     * 那首歌唱完时进度条来回抽」的成因。
+     *
+     * 所以到这里就只维持现状：换歌 / 重放一律等服务端那一帧，本机不越过曲尾去拽它。
+     * 房间真的没了的话，下一次上报（`ended`）会收到 404，由 [handleRoomGone] 收尾。
+     */
+    const atTail = state.duration > 0 && expected >= state.duration - END_GUARD_S;
+    const localDuration = player.duration > 0 ? player.duration : state.duration;
+    const localTail = localDuration > 0 && player.currentTime >= localDuration - END_GUARD_S;
+    if (atTail && localTail) {
+      player.setPlaybackRate(1);
+      return;
+    }
+
     if (state.playing && !player.playing) player.play();
     else if (!state.playing && player.playing) player.pause();
 
-    const expected = livePosition(state, clockOffsetMs);
     const drift = player.currentTime - expected;
     if (Math.abs(drift) > SYNC_SEEK_S) {
       // 差太多：直接跳过去，靠微调要追几十秒。
@@ -490,6 +525,26 @@ export const useRoomStore = defineStore('room', () => {
       personal = null;
       player.setPersistencePaused(false);
     }
+  }
+
+  /**
+   * 服务端已经不认得这个房间了：本地收尾，回到个人播放。
+   *
+   * 为什么必须由**操作失败**来触发，而不是只靠重连对账：房间是内存态，网关一重启就没了，
+   * 而客户端手里的播放态是「推来的」——服务端不会再推任何一帧，它会永远停在
+   * 「正在播放」、位置随推算爬到曲尾。镜像节拍每 200ms 拿这份幽灵进度去对齐播放器，
+   * 曲终时就会把它在「从头开始」与「跳回曲尾」之间来回拽（进度条抽搐）。
+   *
+   * 一次 404 就说明服务端那边没有这个房间了（`roomOf` 查不到任何绑定），此时留着这份
+   * 状态没有任何意义，直接按「房间没了」收尾。
+   *
+   * @returns 是否已按「房间没了」处理（调用方不必再报错）。
+   */
+  function handleRoomGone(error: unknown): boolean {
+    if (!(error instanceof ApiError) || error.status !== 404) return false;
+    toast.info('一起听已结束', 6000);
+    finalizeLeave();
+    return true;
   }
 
   /**
