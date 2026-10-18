@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { badRequest } from '../lib/errors';
-import { isPlatform, PLATFORM_LABEL, type Platform } from '../upstream/types';
+import { isPlatform, type Platform } from '../upstream/types';
+import { platformManifest } from '../platforms/registry';
 import * as catalog from '../services/catalog';
 import { resolveCookie } from '../services/credentials';
 import { createStreamUrl, probeStream } from '../services/stream';
@@ -20,32 +21,41 @@ const QUALITIES = new Set(['standard', 'high', 'lossless', 'hires', 'spatial', '
 const SEARCH_TYPES = new Set(['song', 'artist', 'album', 'playlist']);
 
 export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/platforms', async () => ({
-    items: (['netease', 'qq'] as Platform[]).map((platform) => ({
-      platform,
-      label: PLATFORM_LABEL[platform],
-      acceptsCredentials: true,
-    })),
-  }));
+  /** 平台清单：静态能力供设置页渲染开关，客户端不用把平台名写死。 */
+  app.get('/api/platforms', async () => ({ items: platformManifest() }));
 
   /**
    * 聚合搜索。
-   * `type=song`（默认）会把两个平台的曲目混排去重，同一首歌带多个 sources；
+   * `type=song`（默认）会把各平台曲目混排去重，同一首歌带多个 sources；
    * 其余类型（歌手/专辑/歌单）按平台并列返回，不做跨平台合并。
+   * `platforms` 是用户启用集合（逗号分隔），缺省表示全平台。
    */
-  app.get<{ Querystring: { keyword?: string; type?: string; page?: string; limit?: string } }>(
-    '/api/search',
-    async (request) => {
-      const user = await requireUser(request);
-      const keyword = String(request.query.keyword ?? '').trim();
-      if (!keyword) throw badRequest('请输入搜索关键词');
-      const type = String(request.query.type ?? 'song');
-      if (!SEARCH_TYPES.has(type)) throw badRequest('不支持的搜索类型');
-      const page = Math.max(1, Number(request.query.page ?? 1) || 1);
-      const limit = Math.min(50, Math.max(1, Number(request.query.limit ?? 20) || 20));
-      return catalog.aggregateSearch(request, user.id, keyword, type as catalog.SearchType, page, limit);
-    },
-  );
+  app.get<{
+    Querystring: {
+      keyword?: string;
+      type?: string;
+      page?: string;
+      limit?: string;
+      platforms?: string;
+    };
+  }>('/api/search', async (request) => {
+    const user = await requireUser(request);
+    const keyword = String(request.query.keyword ?? '').trim();
+    if (!keyword) throw badRequest('请输入搜索关键词');
+    const type = String(request.query.type ?? 'song');
+    if (!SEARCH_TYPES.has(type)) throw badRequest('不支持的搜索类型');
+    const page = Math.max(1, Number(request.query.page ?? 1) || 1);
+    const limit = Math.min(50, Math.max(1, Number(request.query.limit ?? 20) || 20));
+    return catalog.aggregateSearch(
+      request,
+      user.id,
+      keyword,
+      type as catalog.SearchType,
+      page,
+      limit,
+      request.query.platforms,
+    );
+  });
 
   /** 歌手详情：基本信息 + 热门歌曲 + 专辑列表。 */
   app.get<{ Params: { platform: string; id: string } }>('/api/artist/:platform/:id', async (request) => {
@@ -108,10 +118,10 @@ export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  /** 发现页：两侧推荐、榜单与热门歌单。 */
-  app.get('/api/discover/feed', async (request) => {
+  /** 发现页：已启用平台的推荐、榜单与热门歌单。 */
+  app.get<{ Querystring: { platforms?: string } }>('/api/discover/feed', async (request) => {
     const user = await requireUser(request);
-    return catalog.discoverFeed(request, user.id);
+    return catalog.discoverFeed(request, user.id, request.query.platforms);
   });
 
   app.get<{ Querystring: { platform?: string } }>('/api/toplists', async (request) => {

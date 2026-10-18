@@ -158,4 +158,16 @@ create table if not exists together_sessions (
 );
 create index if not exists together_sessions_pair_idx
   on together_sessions (user_a, user_b, started_at desc);
+
+-- 云端偏好：跨设备同步用。本机偏好存在浏览器的 localStorage，两者是同一份 JSON。
+--
+-- 刻意用 key-value 而不是给每个设置项加列：网关不解释 value 的语义，
+-- 以后新增设置项（平台开关、播放行为……）都不需要改表，也不用写迁移。
+create table if not exists user_preferences (
+  user_id    bigint      not null references users(id) on delete cascade,
+  key        text        not null,
+  value      jsonb       not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, key)
+);
 `;

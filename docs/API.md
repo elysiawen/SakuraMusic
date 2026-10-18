@@ -654,14 +654,24 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 
 以下接口都可能返回 `5xx`（`code: upstream_error`），表示对应上游不可用。
 
-#### `GET /api/platforms` — 支持的平台
+#### `GET /api/platforms` — 支持的平台与能力
 
-- **认证**：是
+- **认证**：否（启动时就要用，客户端据此渲染平台开关）
 - **响应**
 
 ```json
-{ "items": [{ "platform": "netease", "label": "网易云音乐", "acceptsCredentials": true }] }
+{
+  "items": [
+    {
+      "platform": "netease",
+      "label": "网易云音乐",
+      "capabilities": { "search": true, "discover": true, "library": true }
+    }
+  ]
+}
 ```
+
+- `capabilities` 是**静态能力**（代码事实）：某平台不具备的能力为 `false`，客户端不要为它渲染开关。
 
 #### `GET /api/search` — 聚合搜索
 
@@ -674,6 +684,7 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 | `type` | `song` | `song` / `artist` / `album` / `playlist` |
 | `page` | 1 | ≥1 |
 | `limit` | 20 | 1–50 |
+| `platforms` | 全部 | 逗号分隔的启用平台，如 `netease`；只向这些平台发请求，被排除的平台也不会出现在 `platforms[]` 里 |
 
 - **响应**
 
@@ -693,7 +704,7 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 
 - **注意**：
   - 四个数组**总是存在**，与 `type` 无关的三个是空数组。
-  - `type=song`：两个平台结果**混排 + 按名称/歌手去重**，同一首歌合并成一个 `UnifiedTrack`（`sources` 有两条），再按相关度排序。
+  - `type=song`：各平台结果**混排 + 按名称/歌手去重**，同一首歌合并成一个 `UnifiedTrack`（`sources` 有两条），再按相关度排序；只启用一个平台时 `sources` 自然只有一条。
   - `type=artist` / `album`：**同名合并**（专辑要求「专辑名 + 首位歌手」都相同），各平台入口在 `sources`。
   - 单侧平台失败不影响整体：`platforms[i].ok=false` 且带 `error`，另一侧结果照常返回。
   - 抓不到内容不报错，返回空数组。
@@ -718,20 +729,39 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 #### `GET /api/discover/feed` — 发现页
 
 - **认证**：是
+- **Query**：`platforms`（可选，逗号分隔；缺省为全部。被排除的平台不发起请求）
 - **响应**：`DiscoverFeed`（见 [2.6](#26-其它)）
-- **内置分区**（按顺序，某项为空则不出现）
+- **内置分区**（按平台分组、组内按下列顺序；某项为空则不出现）
 
 | `key` | 标题 | `kind` | 平台 |
 |---|---|---|---|
 | `netease-daily` | 每日推荐 | tracks | netease（需登录网易云） |
 | `netease-fm` | 私人 FM | tracks | netease（需登录网易云） |
+| `netease-toplists` | 网易云榜单 | toplists | netease |
 | `qq-guess` | 猜你喜欢 | tracks | qq |
 | `qq-newsong` | 新歌速递 | tracks | qq |
-| `netease-toplists` | 网易云榜单 | toplists | netease |
 | `qq-toplists` | QQ 音乐榜单 | toplists | qq |
 | `qq-songlists` | 热门歌单 | playlists | qq |
 
 - **注意**：单个分区失败只记录到 `errors`，其余分区照常返回；未绑定账号时「每日推荐 / 私人 FM」等需要登录的分区会静默缺失。
+
+#### `GET /api/preferences` — 云端偏好
+
+- **认证**：是
+- **响应**：`{ "items": [{ "key": "platforms", "value": { ... }, "updatedAt": "2026-10-19T..." }] }`
+- 偏好只有云端这一份（浏览器里的副本仅作首屏快照）；网关不解释 `value` 的语义，只做键名与体积校验。
+
+#### `PUT /api/preferences/:key` — 写入一份偏好
+
+- **认证**：是
+- **Body**：`{ "value": { ... } }`（整份覆盖，不做字段级合并）
+- **限制**：`key` 匹配 `^[a-z][a-z0-9_-]{0,31}$`；`value` 序列化后不超过 16 KB
+- **响应**：`{ "key": "...", "value": ..., "updatedAt": "..." }`
+
+#### `DELETE /api/preferences/:key` — 删除一份偏好
+
+- **认证**：是
+- **响应**：`{ "ok": true }`
 
 #### `GET /api/toplists` — 平台榜单列表
 

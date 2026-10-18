@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { PLATFORM_LABEL, type Platform } from '@/api/types';
+import { PLATFORMS, PLATFORM_LABEL, type Platform } from '@/api/types';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
+import { usePreferencesStore } from '@/stores/preferences';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
 
@@ -10,6 +11,7 @@ const emit = defineEmits<{ (event: 'bind', platform: Platform): void }>();
 
 const library = useLibraryStore();
 const credentials = useCredentialStore();
+const preferences = usePreferencesStore();
 
 const navItems = [
   { name: 'home', label: '发现', icon: 'sparkles' },
@@ -17,8 +19,14 @@ const navItems = [
   { name: 'settings', label: '设置', icon: 'settings' },
 ];
 
+/*
+ * 只提示「还没绑定、而且用户还想用它」的平台：
+ * 在设置里把这平台的「账号歌单」关掉后，侧栏就不该继续劝人去绑定。
+ */
 const unboundPlatforms = computed<Platform[]>(() =>
-  (['netease', 'qq'] as Platform[]).filter((platform) => !credentials.modeByPlatform[platform]),
+  PLATFORMS.filter(
+    (platform) => !credentials.modeByPlatform[platform] && preferences.isEnabled(platform, 'library'),
+  ),
 );
 </script>
 

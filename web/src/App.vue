@@ -14,6 +14,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useConnectStore } from '@/stores/connect';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
+import { usePreferencesStore } from '@/stores/preferences';
 import { useRoomStore } from '@/stores/room';
 
 const route = useRoute();
@@ -21,6 +22,7 @@ const auth = useAuthStore();
 const connect = useConnectStore();
 const credentials = useCredentialStore();
 const library = useLibraryStore();
+const preferences = usePreferencesStore();
 const room = useRoomStore();
 
 const bindPlatform = ref<Platform | null>(null);
@@ -29,6 +31,8 @@ const bare = computed(() => Boolean(route.meta.bare));
 
 onMounted(async () => {
   if (!auth.ready) await auth.initialize();
+  // 平台开关先于搜索/首页生效：清单与云端配置都在这里就位。
+  await preferences.bootstrap();
 });
 
 /**
@@ -51,7 +55,7 @@ watch(
     connect.start();
     // 房间事件与设备事件共用这条 SSE：登录取到连接后订阅一次即可。
     room.init();
-    void Promise.all([credentials.refreshLists(), library.loadAll()]);
+    void Promise.all([credentials.refreshLists(), library.loadAll(), preferences.bootstrap()]);
   },
   { immediate: true },
 );

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { libraryApi, platformApi } from '@/api';
 import {
+  PLATFORMS,
   PLATFORM_LABEL,
   type Platform,
   type PlatformImportResult,
@@ -21,6 +22,7 @@ import { useTransport } from '@/composables/useTransport';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
+import { usePreferencesStore } from '@/stores/preferences';
 import { useRoomStore } from '@/stores/room';
 import { formatRelativeTime } from '@/utils/format';
 import { describeImport } from '@/utils/platformImport';
@@ -55,14 +57,20 @@ const tabs = computed(() => [
  * 两边的内容与操作完全不同，所以不做「合并展示」—— 本地 / 网易云 / QQ 音乐各看各的。
  */
 const credentials = useCredentialStore();
+const preferences = usePreferencesStore();
 const source = ref<Platform | null>(null);
 const platformPlaylists = ref<PlaylistSummary[]>([]);
 const platformLoading = ref(false);
 const platformError = ref('');
 
-/** 只列已绑定的平台：没绑就没有可读的东西，不做成灰掉的入口。 */
+/**
+ * 只列已绑定、且没在设置里关掉「账号歌单」的平台：
+ * 没绑就没有可读的东西，关掉了则是用户明确表示不想看到，都不做成灰入口。
+ */
 const boundPlatforms = computed<Platform[]>(() =>
-  (['netease', 'qq'] as Platform[]).filter((item) => credentials.modeByPlatform[item]),
+  PLATFORMS.filter(
+    (item) => credentials.modeByPlatform[item] && preferences.isEnabled(item, 'library'),
+  ),
 );
 
 /** 加载文案带上平台名，用户知道在等哪一家的数据（组件里再补上会跳动的三点）。 */

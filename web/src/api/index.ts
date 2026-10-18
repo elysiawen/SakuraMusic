@@ -15,6 +15,8 @@ import type {
   QqLoginType,
   Quality,
   SakuraUser,
+  PlatformManifest,
+  PreferenceEntry,
   SearchResult,
   SearchType,
   ServerCredential,
@@ -75,8 +77,10 @@ export const credentialApi = {
 /* ------------------------------ 音乐 ------------------------------ */
 
 export const musicApi = {
-  search: (keyword: string, type: SearchType = 'song', page = 1, limit = 20) =>
-    apiRequest<SearchResult>('/api/search', { query: { keyword, type, page, limit } }),
+  /** 平台清单与静态能力：设置页据此渲染开关，客户端不再写死平台名。 */
+  platforms: () => apiRequest<{ items: PlatformManifest[] }>('/api/platforms'),
+  search: (keyword: string, type: SearchType = 'song', page = 1, limit = 20, platforms?: string) =>
+    apiRequest<SearchResult>('/api/search', { query: { keyword, type, page, limit, platforms } }),
   artist: (platform: Platform, id: string) =>
     apiRequest<ArtistDetail>(`/api/artist/${platform}/${encodeURIComponent(id)}`),
   album: (platform: Platform, id: string) =>
@@ -92,7 +96,8 @@ export const musicApi = {
       method: 'POST',
       body: { platform, id, quality },
     }),
-  discoverFeed: () => apiRequest<DiscoverFeed>('/api/discover/feed'),
+  discoverFeed: (platforms?: string) =>
+    apiRequest<DiscoverFeed>('/api/discover/feed', { query: { platforms } }),
   toplists: (platform: Platform) =>
     apiRequest<{ items: PlaylistSummary[] }>('/api/toplists', { query: { platform } }),
   toplist: (platform: Platform, id: string, page = 1, limit = 100) =>
@@ -103,6 +108,23 @@ export const musicApi = {
     apiRequest<CollectionDetail>(`/api/collection/${platform}/${encodeURIComponent(id)}`, {
       query: { page, limit },
     }),
+};
+
+/* ------------------------------ 偏好 ------------------------------ */
+
+/**
+ * 云端偏好。只在用户把存储位置选成「云端」时才会调用；
+ * 「仅本机」模式下这些接口完全不会被触碰。
+ */
+export const preferenceApi = {
+  list: () => apiRequest<{ items: PreferenceEntry[] }>('/api/preferences'),
+  put: (key: string, value: unknown) =>
+    apiRequest<PreferenceEntry>(`/api/preferences/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: { value },
+    }),
+  remove: (key: string) =>
+    apiRequest<{ ok: boolean }>(`/api/preferences/${encodeURIComponent(key)}`, { method: 'DELETE' }),
 };
 
 /* ------------------------------ 音乐库 ------------------------------ */

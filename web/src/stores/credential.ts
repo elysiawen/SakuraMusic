@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { credentialApi } from '@/api';
-import type { AccountProfile, Platform, ServerCredential } from '@/api/types';
+import { PLATFORMS, type AccountProfile, type Platform, type ServerCredential } from '@/api/types';
 import {
   deleteLocalCredential,
   listLocalCredentials,
@@ -24,7 +24,7 @@ export const useCredentialStore = defineStore('credential', () => {
   });
 
   const boundPlatforms = computed<Platform[]>(() =>
-    Object.keys(modeByPlatform.value).filter((key): key is Platform => key === 'netease' || key === 'qq'),
+    PLATFORMS.filter((platform) => Boolean(modeByPlatform.value[platform])),
   );
 
   const profileOf = (platform: Platform): AccountProfile | null => {

@@ -8,6 +8,7 @@ import { registerCredentialRoutes } from './routes/credentials';
 import { registerLibraryRoutes } from './routes/library';
 import { registerMusicRoutes } from './routes/music';
 import { registerPlatformRoutes } from './routes/platform';
+import { registerPreferenceRoutes } from './routes/preferences';
 import { registerRoomRoutes } from './routes/rooms';
 import { registerStreamRoutes } from './routes/stream';
 import { setDeviceLifecycleHooks } from './services/connect';
@@ -23,7 +24,7 @@ function applyCors(app: FastifyInstance): void {
       reply.header('Vary', 'Origin');
     }
     if (request.method === 'OPTIONS') {
-      reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+      reply.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
       reply.header(
         'Access-Control-Allow-Headers',
         'Content-Type, X-Sakura-Credential, Range',
@@ -104,6 +105,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await registerMusicRoutes(app);
   await registerLibraryRoutes(app);
   await registerPlatformRoutes(app);
+  await registerPreferenceRoutes(app);
   await registerStreamRoutes(app);
   await registerConnectRoutes(app);
   await registerRoomRoutes(app);

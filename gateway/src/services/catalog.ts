@@ -15,8 +15,8 @@ import {
   type UnifiedTrack,
 } from '../upstream/types';
 import { normalizeArtist, normalizeTitle, normalizeTitleStrict } from '../lib/parse';
-import * as netease from '../upstream/netease';
-import * as qq from '../upstream/qq';
+import type { CoverHint } from '../upstream/netease';
+import { adapterOf, resolvePlatforms } from '../platforms/registry';
 import { resolveCookie } from './credentials';
 
 export interface PlatformStatus {
@@ -75,7 +75,7 @@ export interface MergedTrack {
 }
 
 /** 「原曲名|原唱」集合，由网易云翻唱条目的 `origin*` 反推。 */
-function originKeysOf(hints: Map<string, netease.CoverHint>): Set<string> {
+function originKeysOf(hints: Map<string, CoverHint>): Set<string> {
   const keys = new Set<string>();
   for (const hint of hints.values()) {
     if (!hint.originTitle || !hint.originArtist) continue;
@@ -100,7 +100,7 @@ function isOriginTrack(track: UnifiedTrack, originKeys: Set<string>): boolean {
  */
 export function mergeTracks(
   groups: Array<{ platform: Platform; items: UnifiedTrack[] }>,
-  hints: Map<string, netease.CoverHint> = new Map(),
+  hints: Map<string, CoverHint> = new Map(),
 ): MergedTrack[] {
   const originKeys = originKeysOf(hints);
   const merged = new Map<string, MergedTrack[]>();
@@ -273,37 +273,45 @@ function looksLikeRealArtist(artist: PlatformArtist): boolean {
   );
 }
 
+/** 一次意图探测要问哪些平台、各自用什么身份。 */
+export interface IntentTarget {
+  platform: Platform;
+  cookie: string | null;
+}
+
 /**
  * 问一下平台的歌手库：这个关键词是不是一个像样的歌手。
  *
- * 返回 null 表示得不出结论（两个平台都请求失败，或者压根没有同名歌手），
- * 此时交给结果集分布兜底。结果按关键词缓存，翻页不会重复请求。
+ * 返回 null 表示得不出结论（全问挂了，或者压根没有同名歌手），
+ * 此时交给结果集分布兜底。结果按「关键词 + 平台组合」缓存，翻页不会重复请求；
+ * 平台组合必须进缓存键，否则用户关掉一个平台后还会拿到旧的意图结论。
  */
 export async function detectArtistIntent(
   keyword: string,
-  neteaseCookie: string | null,
-  qqCookie: string | null,
+  targets: IntentTarget[],
 ): Promise<boolean | null> {
   const key = normalizeArtist(keyword);
   if (!key) return false;
-  const cached = artistIntentCache.get(key);
+  if (targets.length === 0) return null;
+  const cacheKey = `${key}|${targets.map((target) => target.platform).join(',')}`;
+  const cached = artistIntentCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ARTIST_INTENT_TTL_MS) return cached.byArtist;
 
-  const [neteaseHit, qqHit] = await Promise.all([
-    attemptValue(() => netease.searchArtists(keyword, 1, 5, neteaseCookie)),
-    attemptValue(() => qq.searchArtists(keyword, 1, 5, qqCookie)),
-  ]);
-  // 两边都挂了就别下结论，也别缓存，下次重试。
-  if (neteaseHit.value === null && qqHit.value === null) return null;
+  const hits = await Promise.all(
+    targets.map((target) =>
+      attemptValue(() => adapterOf(target.platform).searchArtists(keyword, 1, 5, target.cookie)),
+    ),
+  );
+  // 全挂了就别下结论，也别缓存，下次重试。
+  if (hits.every((hit) => hit.value === null)) return null;
 
-  const candidates = [
-    exactArtist(neteaseHit.value ?? [], keyword),
-    exactArtist(qqHit.value ?? [], keyword),
-  ].filter((artist): artist is PlatformArtist => Boolean(artist));
+  const candidates = hits
+    .map((hit) => exactArtist(hit.value ?? [], keyword))
+    .filter((artist): artist is PlatformArtist => Boolean(artist));
   const byArtist = candidates.length === 0 ? null : candidates.some(looksLikeRealArtist);
 
   if (artistIntentCache.size > 200) artistIntentCache.clear();
-  artistIntentCache.set(key, { byArtist, at: Date.now() });
+  artistIntentCache.set(cacheKey, { byArtist, at: Date.now() });
   return byArtist;
 }
 
@@ -497,6 +505,33 @@ function emptySearch(keyword: string, type: SearchType, page: number, limit: num
   return { keyword, type, page, limit, items: [], artists: [], albums: [], playlists: [], platforms: [] };
 }
 
+/** 逐个平台取 cookie：只在用户启用的平台上花这次解密开销。 */
+async function targetsOf(
+  request: FastifyRequest,
+  userId: string,
+  platforms: Platform[],
+): Promise<IntentTarget[]> {
+  return Promise.all(
+    platforms.map(async (platform) => ({
+      platform,
+      cookie: await resolveCookie(request, platform, userId),
+    })),
+  );
+}
+
+/** 各平台并发跑同一件事，单侧失败只记错误。 */
+async function searchEach<T>(
+  targets: IntentTarget[],
+  run: (target: IntentTarget) => Promise<T[]>,
+): Promise<Array<{ platform: Platform; items: T[]; error?: string }>> {
+  return Promise.all(
+    targets.map(async (target) => ({
+      platform: target.platform,
+      ...(await attempt(() => run(target))),
+    })),
+  );
+}
+
 export async function aggregateSearch(
   request: FastifyRequest,
   userId: string,
@@ -504,70 +539,69 @@ export async function aggregateSearch(
   type: SearchType,
   page: number,
   limit: number,
+  requested?: string,
 ): Promise<AggregatedSearch> {
-  const [neteaseCookie, qqCookie] = await Promise.all([
-    resolveCookie(request, 'netease', userId),
-    resolveCookie(request, 'qq', userId),
-  ]);
+  // 只向用户启用的平台发请求；被禁用的平台连 platforms[] 都不出现。
+  const targets = await targetsOf(request, userId, resolvePlatforms(requested, 'search'));
 
   if (type === 'artist') {
-    const [neteaseResult, qqResult] = await Promise.all([
-      attempt(() => netease.searchArtists(keyword, page, limit, neteaseCookie)),
-      attempt(() => qq.searchArtists(keyword, page, limit, qqCookie)),
-    ]);
+    const results = await searchEach(targets, (target) =>
+      adapterOf(target.platform).searchArtists(keyword, page, limit, target.cookie),
+    );
     return {
       ...emptySearch(keyword, type, page, limit),
-      artists: mergeArtists([...neteaseResult.items, ...qqResult.items]),
-      platforms: [statusOf('netease', neteaseResult), statusOf('qq', qqResult)],
+      artists: mergeArtists(results.flatMap((result) => result.items)),
+      platforms: results.map((result) => statusOf(result.platform, result)),
     };
   }
 
   if (type === 'album') {
     // 歌手库那一路只用来判断意图，和专辑搜索并发，不额外增加等待。
-    const [neteaseResult, qqResult, intent] = await Promise.all([
-      attempt(() => netease.searchAlbums(keyword, page, limit, neteaseCookie)),
-      attempt(() => qq.searchAlbums(keyword, page, limit, qqCookie)),
-      detectArtistIntent(keyword, neteaseCookie, qqCookie),
+    const [results, intent] = await Promise.all([
+      searchEach(targets, (target) =>
+        adapterOf(target.platform).searchAlbums(keyword, page, limit, target.cookie),
+      ),
+      detectArtistIntent(keyword, targets),
     ]);
     return {
       ...emptySearch(keyword, type, page, limit),
       albums: rankAlbums(
-        mergeAlbumGroups([
-          { platform: 'netease', items: neteaseResult.items },
-          { platform: 'qq', items: qqResult.items },
-        ]),
+        mergeAlbumGroups(results.map((result) => ({ platform: result.platform, items: result.items }))),
         keyword,
         intent,
       ),
-      platforms: [statusOf('netease', neteaseResult), statusOf('qq', qqResult)],
+      platforms: results.map((result) => statusOf(result.platform, result)),
     };
   }
 
   if (type === 'playlist') {
-    const [neteaseResult, qqResult] = await Promise.all([
-      attempt(() => netease.searchPlaylists(keyword, page, limit, neteaseCookie)),
-      attempt(() => qq.searchPlaylists(keyword, page, limit, qqCookie)),
-    ]);
+    const results = await searchEach(targets, (target) =>
+      adapterOf(target.platform).searchPlaylists(keyword, page, limit, target.cookie),
+    );
     return {
       ...emptySearch(keyword, type, page, limit),
-      playlists: [...neteaseResult.items, ...qqResult.items],
-      platforms: [statusOf('netease', neteaseResult), statusOf('qq', qqResult)],
+      playlists: results.flatMap((result) => result.items),
+      platforms: results.map((result) => statusOf(result.platform, result)),
     };
   }
 
-  // 单曲：合并去重后按相关度排序，同一首歌会带上两个平台的 sources。
-  const [neteaseHit, qqResult] = await Promise.all([
-    attemptValue(() => netease.searchTracks(keyword, page, limit, neteaseCookie)),
-    attempt(() => qq.searchTracks(keyword, page, limit, qqCookie)),
-  ]);
-  const neteaseTracks = neteaseHit.value?.items ?? [];
+  // 单曲：合并去重后按相关度排序，同一首歌会带上各平台的 sources。
+  const hits = await Promise.all(
+    targets.map(async (target) => ({
+      platform: target.platform,
+      ...(await attemptValue(() =>
+        adapterOf(target.platform).searchTracks(keyword, page, limit, target.cookie),
+      )),
+    })),
+  );
+  const hints = new Map<string, CoverHint>();
+  for (const hit of hits) {
+    for (const [key, value] of hit.value?.hints ?? []) hints.set(key, value);
+  }
   const items = rankTracks(
     mergeTracks(
-      [
-        { platform: 'netease', items: neteaseTracks },
-        { platform: 'qq', items: qqResult.items },
-      ],
-      neteaseHit.value?.hints,
+      hits.map((hit) => ({ platform: hit.platform, items: hit.value?.items ?? [] })),
+      hints,
     ),
     keyword,
   );
@@ -575,10 +609,9 @@ export async function aggregateSearch(
   return {
     ...emptySearch(keyword, type, page, limit),
     items,
-    platforms: [
-      statusOf('netease', { items: neteaseTracks, error: neteaseHit.error }),
-      statusOf('qq', qqResult),
-    ],
+    platforms: hits.map((hit) =>
+      statusOf(hit.platform, { items: hit.value?.items ?? [], error: hit.error }),
+    ),
   };
 }
 
@@ -591,7 +624,7 @@ export async function loadTrack(
   id: string,
 ): Promise<UnifiedTrack | null> {
   const cookie = await resolveCookie(request, platform, userId);
-  return platform === 'netease' ? netease.trackDetail(id, cookie) : qq.trackDetail(id, cookie);
+  return adapterOf(platform).trackDetail(id, cookie);
 }
 
 export async function loadLyric(
@@ -601,7 +634,7 @@ export async function loadLyric(
   id: string,
 ): Promise<{ lrc: string; trans: string; roma: string }> {
   const cookie = await resolveCookie(request, platform, userId);
-  return platform === 'netease' ? netease.lyric(id, cookie) : qq.lyric(id, cookie);
+  return adapterOf(platform).lyric(id, cookie);
 }
 
 /* ------------------------------ 歌手 / 专辑详情 ------------------------------ */
@@ -620,8 +653,7 @@ export async function loadArtist(
   id: string,
 ): Promise<ArtistDetail> {
   const cookie = await resolveCookie(request, platform, userId);
-  const bundle =
-    platform === 'netease' ? await netease.artistBundle(id, cookie) : await qq.artistBundle(id, cookie);
+  const bundle = await adapterOf(platform).artistBundle(id, cookie);
   return { ...bundle, albums: mergeAlbums(bundle.albums) };
 }
 
@@ -637,7 +669,7 @@ export async function loadAlbum(
   id: string,
 ): Promise<AlbumDetail> {
   const cookie = await resolveCookie(request, platform, userId);
-  return platform === 'netease' ? netease.albumBundle(id, cookie) : qq.albumBundle(id, cookie);
+  return adapterOf(platform).albumBundle(id, cookie);
 }
 
 /* ------------------------------ 榜单 / 歌单 ------------------------------ */
@@ -648,7 +680,7 @@ export async function loadToplists(
   platform: Platform,
 ): Promise<PlaylistSummary[]> {
   const cookie = await resolveCookie(request, platform, userId);
-  return platform === 'netease' ? netease.toplists(cookie) : qq.toplists(cookie);
+  return adapterOf(platform).toplists(cookie);
 }
 
 export interface CollectionDetail {
@@ -670,34 +702,8 @@ export async function loadCollection(
   limit: number,
 ): Promise<CollectionDetail> {
   const cookie = await resolveCookie(request, platform, userId);
-
-  if (platform === 'netease') {
-    // 榜单与歌单在网易云是同一种资源，先取详情拿到标题与封面，再拉曲目。
-    const [meta, items] = await Promise.all([
-      netease.playlistMeta(id, cookie),
-      netease.playlistTracks(id, limit, (page - 1) * limit, cookie),
-    ]);
-    return {
-      platform,
-      id,
-      title: meta.title,
-      cover: meta.cover,
-      description: meta.description,
-      trackCount: meta.trackCount,
-      items,
-    };
-  }
-
-  const detail = await qq.songlistTracks(id, page, limit, cookie);
-  return {
-    platform,
-    id,
-    title: detail.title,
-    cover: detail.cover,
-    description: detail.description,
-    trackCount: detail.total,
-    items: detail.items,
-  };
+  const payload = await adapterOf(platform).collection(id, page, limit, cookie);
+  return { platform, id, ...payload };
 }
 
 export interface ToplistDetail extends CollectionDetail {
@@ -713,34 +719,8 @@ export async function loadToplist(
   limit: number,
 ): Promise<ToplistDetail> {
   const cookie = await resolveCookie(request, platform, userId);
-
-  if (platform === 'qq') {
-    const detail = await qq.toplistTracks(id, page, limit, cookie);
-    return {
-      platform,
-      id,
-      title: detail.title || '排行榜',
-      cover: detail.cover,
-      description: detail.description,
-      items: detail.items,
-      trackCount: detail.items.length,
-    };
-  }
-
-  // 网易云榜单本质是歌单，复用歌单曲目接口。
-  const [meta, items] = await Promise.all([
-    netease.playlistMeta(id, cookie),
-    netease.playlistTracks(id, limit, (page - 1) * limit, cookie),
-  ]);
-  return {
-    platform,
-    id,
-    title: meta.title,
-    cover: meta.cover,
-    description: meta.description,
-    trackCount: meta.trackCount,
-    items,
-  };
+  const payload = await adapterOf(platform).toplistDetail(id, page, limit, cookie);
+  return { platform, id, ...payload };
 }
 
 /* ------------------------------ 发现页 ------------------------------ */
@@ -777,92 +757,44 @@ async function safe<T>(
   }
 }
 
-/** 汇总两侧的推荐内容；需要登录的板块在未绑定账号时会被跳过。 */
-export async function discoverFeed(request: FastifyRequest, userId: string): Promise<DiscoverFeed> {
-  const [neteaseCookie, qqCookie] = await Promise.all([
-    resolveCookie(request, 'netease', userId),
-    resolveCookie(request, 'qq', userId),
-  ]);
-
-  const sections: DiscoverSection[] = [];
+/**
+ * 汇总已启用平台的推荐内容；需要登录的板块在未绑定账号时会被跳过。
+ *
+ * 板块清单在 `platforms/registry.ts` 里跟着平台走，这里只负责并发调度与降级：
+ * 新增平台不用改这个函数，坏一个板块也只丢那一段。
+ * 版块顺序 = 平台顺序（网易云在前），不再跨平台交错。
+ */
+export async function discoverFeed(
+  request: FastifyRequest,
+  userId: string,
+  requested?: string,
+): Promise<DiscoverFeed> {
+  const targets = await targetsOf(request, userId, resolvePlatforms(requested, 'discover'));
   const errors: DiscoverFeed['errors'] = [];
 
-  const [neteaseDaily, neteaseTop, neteaseFm, qqGuess, qqNew, qqTop, qqSonglists] = await Promise.all([
-    safe(errors, 'netease', 'daily', () => netease.recommendSongs(neteaseCookie)),
-    safe(errors, 'netease', 'toplists', () => netease.toplists(neteaseCookie)),
-    safe(errors, 'netease', 'fm', () => netease.personalFm(neteaseCookie)),
-    safe(errors, 'qq', 'guess', () => qq.guessRecommend(qqCookie)),
-    safe(errors, 'qq', 'newsong', () => qq.recommendNewSongs(qqCookie)),
-    safe(errors, 'qq', 'toplists', () => qq.toplists(qqCookie)),
-    safe(errors, 'qq', 'songlists', () => qq.recommendSonglists(qqCookie)),
-  ]);
+  // 先把「平台 × 板块」摊平，再一起并发，避免串行等待。
+  const jobs = targets.flatMap((target) =>
+    adapterOf(target.platform).feedSources.map((source) => ({ target, source })),
+  );
+  const loaded = await Promise.all(
+    jobs.map(async ({ target, source }) => ({
+      target,
+      source,
+      items: await safe(errors, target.platform, source.key, () => source.load(target.cookie)),
+    })),
+  );
 
-  if (neteaseDaily && neteaseDaily.length > 0) {
+  const sections: DiscoverSection[] = [];
+  for (const { target, source, items } of loaded) {
+    const list = items ?? [];
+    if (list.length === 0) continue;
     sections.push({
-      key: 'netease-daily',
-      title: '每日推荐',
-      subtitle: '来自网易云音乐',
-      platform: 'netease',
-      kind: 'tracks',
-      items: neteaseDaily,
-    });
-  }
-  if (neteaseFm && neteaseFm.length > 0) {
-    sections.push({
-      key: 'netease-fm',
-      title: '私人 FM',
-      subtitle: '来自网易云音乐',
-      platform: 'netease',
-      kind: 'tracks',
-      items: neteaseFm,
-    });
-  }
-  if (qqGuess && qqGuess.length > 0) {
-    sections.push({
-      key: 'qq-guess',
-      title: '猜你喜欢',
-      subtitle: '来自 QQ 音乐',
-      platform: 'qq',
-      kind: 'tracks',
-      items: qqGuess,
-    });
-  }
-  if (qqNew && qqNew.length > 0) {
-    sections.push({
-      key: 'qq-newsong',
-      title: '新歌速递',
-      subtitle: '来自 QQ 音乐',
-      platform: 'qq',
-      kind: 'tracks',
-      items: qqNew,
-    });
-  }
-  if (neteaseTop && neteaseTop.length > 0) {
-    sections.push({
-      key: 'netease-toplists',
-      title: '网易云榜单',
-      platform: 'netease',
-      kind: 'toplists',
-      items: neteaseTop.slice(0, 12),
-    });
-  }
-  if (qqTop && qqTop.length > 0) {
-    sections.push({
-      key: 'qq-toplists',
-      title: 'QQ 音乐榜单',
-      platform: 'qq',
-      kind: 'toplists',
-      items: qqTop.slice(0, 12),
-    });
-  }
-  if (qqSonglists && qqSonglists.length > 0) {
-    sections.push({
-      key: 'qq-songlists',
-      title: '热门歌单',
-      subtitle: '来自 QQ 音乐',
-      platform: 'qq',
-      kind: 'playlists',
-      items: qqSonglists,
+      key: source.key,
+      title: source.title,
+      subtitle: source.subtitle,
+      platform: target.platform,
+      kind: source.kind,
+      items: source.limit ? list.slice(0, source.limit) : list,
     });
   }
 

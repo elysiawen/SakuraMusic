@@ -324,10 +324,50 @@ export interface PlayResolveResult {
   direct?: DirectStream;
 }
 
+/** 平台的固定顺序：合并、展示都按它来，不要依赖对象键序。 */
+export const PLATFORMS: Platform[] = ['netease', 'qq'];
+
 export const PLATFORM_LABEL: Record<Platform, string> = {
   netease: '网易云',
   qq: 'QQ 音乐',
 };
+
+/**
+ * 平台能力维度。
+ *
+ * 与「平台」是两回事：平台是代码里有哪些上游，能力是用户想让它参与哪些功能。
+ * 播放不在其中 —— 关掉一个平台只是不再拿它做发现与检索，已经收藏的歌照常能放。
+ */
+export type Capability = 'search' | 'discover' | 'library';
+
+export const CAPABILITIES: Capability[] = ['search', 'discover', 'library'];
+
+export const CAPABILITY_LABEL: Record<Capability, string> = {
+  search: '参与搜索',
+  discover: '首页推荐',
+  library: '账号歌单',
+};
+
+export const CAPABILITY_HINT: Record<Capability, string> = {
+  search: '搜索单曲、歌手、专辑、歌单时包含这个平台',
+  discover: '首页的每日推荐、FM、榜单、热门歌单包含这个平台',
+  library: '「我的音乐」里展示这个平台账号的收藏与歌单',
+};
+
+/** 平台在服务端声明的静态能力；为 false 的能力不渲染开关。 */
+export interface PlatformManifest {
+  platform: Platform;
+  label: string;
+  capabilities: Record<Capability, boolean>;
+}
+
+/** 云端偏好条目（key-value，网关不解释语义）。 */
+export interface PreferenceEntry {
+  key: string;
+  value: unknown;
+  updatedAt: string;
+}
+
 
 export const PLATFORM_COLOR: Record<Platform, string> = {
   netease: '#e0453a',

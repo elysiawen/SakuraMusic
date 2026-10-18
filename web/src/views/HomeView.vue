@@ -25,9 +25,11 @@ import TrackRail from '@/components/TrackRail.vue';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
 import { useCredentialStore } from '@/stores/credential';
+import { usePreferencesStore } from '@/stores/preferences';
 
 const auth = useAuthStore();
 const credentials = useCredentialStore();
+const preferences = usePreferencesStore();
 const toast = useToast();
 
 const feed = ref<DiscoverFeed | null>(null);
@@ -50,11 +52,19 @@ const greeting = computed(() => {
   return '晚上好';
 });
 
-/** 绑定情况决定「每日推荐」「私人 FM」这类个性化板块是否可用。 */
-const signature = computed(() => [...credentials.boundPlatforms].sort().join(','));
+/**
+ * 决定这批推荐内容的因素：绑定了哪些平台（个性化板块）、启用了哪些平台（板块来源）。
+ *
+ * 两者进同一个签名，缓存才不会在「关掉一个平台后回到首页」时命中旧内容。
+ */
+const signature = computed(
+  () =>
+    `${[...credentials.boundPlatforms].sort().join(',')}|${preferences.enabledPlatforms('discover').join(',')}`,
+);
 
-watch(signature, (value) => {
-  if (feed.value) cachedSignature = value;
+/** 绑定或开关一变就重拉：否则关掉的平台还会留在当前这批板块里，看起来像没生效。 */
+watch(signature, (next, previous) => {
+  if (next !== previous && feed.value) void load(true);
 });
 
 /** `force = true` 时忽略缓存（「换一批」按钮）。 */
@@ -67,7 +77,7 @@ async function load(force = false): Promise<void> {
 
   loading.value = true;
   try {
-    const data = await musicApi.discoverFeed();
+    const data = await musicApi.discoverFeed(preferences.enabledParam('discover'));
     cachedFeed = data;
     cachedSignature = signature.value;
     feed.value = data;
@@ -90,7 +100,7 @@ onMounted(() => {
       <div class="stack" style="gap: 4px">
         <h1 style="font-size: 26px">{{ greeting }}，{{ auth.user?.nickname ?? '朋友' }} 🌸</h1>
         <p class="muted" style="margin: 0; font-size: 13px">
-          同一首歌会在两个平台之间自动合并，点封面上的平台标签即可手动切换音源。
+          同一首歌会在已启用的平台之间自动合并，点封面上的平台标签即可手动切换音源。
         </p>
       </div>
       <button class="btn" type="button" :disabled="loading" @click="load(true)">
@@ -129,7 +139,7 @@ onMounted(() => {
       v-else-if="feed && feed.sections.length === 0"
       icon="sparkles"
       title="暂时没有可展示的推荐"
-      description="可能是两个上游服务未启动，或未绑定账号导致个性化内容不可用。"
+      description="可能是上游服务未启动、在设置里关掉了首页推荐，或未绑定账号导致个性化内容不可用。"
     >
       <button class="btn btn-primary" type="button" @click="load(true)">重新加载</button>
     </EmptyState>

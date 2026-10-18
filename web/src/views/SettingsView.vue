@@ -1,11 +1,23 @@
 <script setup lang="ts">
-import { PLATFORM_LABEL, QUALITY_LABEL, type Platform, type Quality } from '@/api/types';
+import { computed } from 'vue';
+import {
+  CAPABILITIES,
+  CAPABILITY_HINT,
+  CAPABILITY_LABEL,
+  PLATFORMS,
+  PLATFORM_LABEL,
+  QUALITY_LABEL,
+  type Capability,
+  type Platform,
+  type Quality,
+} from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import BackgroundPicker from '@/components/BackgroundPicker.vue';
 import ThemePicker from '@/components/ThemePicker.vue';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
 import { useToast } from '@/composables/useToast';
 import { usePlayerStore, type RouteMode } from '@/stores/player';
+import { usePreferencesStore } from '@/stores/preferences';
 import { useThemeStore } from '@/stores/theme';
 
 /**
@@ -14,9 +26,15 @@ import { useThemeStore } from '@/stores/theme';
  */
 const player = usePlayerStore();
 const theme = useThemeStore();
+const preferences = usePreferencesStore();
 const toast = useToast();
 
-const platforms: Platform[] = ['netease', 'qq'];
+const platforms: Platform[] = PLATFORMS;
+
+/** 总开关还开着的平台：只剩一个时，跨平台的选项（音源偏好）就不必展示了。 */
+const activePlatforms = computed(() =>
+  platforms.filter((platform) => preferences.isPlatformEnabled(platform)),
+);
 /*
  * 默认音质的候选。高级档（高清臻音 / 超清母带 / 沉浸环绕声）也要列出来：音质面板里选了它们就会写进
  * 这个偏好，设置页要是没有对应的芯片，用户会发现"面板里选了、这里却没有任何一个是选中的"。
@@ -72,6 +90,30 @@ function retryDirect(): void {
   player.resetProxyOnly();
   toast.success(`已清除 ${count} 个平台的直连记录，下次播放会重新尝试直连`);
 }
+
+/* ------------------------------ 平台开关 ------------------------------ */
+
+function togglePlatform(platform: Platform, next: boolean): void {
+  const error = preferences.setPlatformEnabled(platform, next);
+  if (error) toast.error(error);
+}
+
+function toggleCapability(platform: Platform, capability: Capability, next: boolean): void {
+  const error = preferences.setEnabled(platform, capability, next);
+  if (error) toast.error(error);
+}
+
+async function restoreFromCloud(): Promise<void> {
+  await preferences.pullCloud();
+  if (preferences.cloudError) toast.error(preferences.cloudError);
+  else toast.success('已用云端配置覆盖本机');
+}
+
+const cloudUpdatedText = computed(() => {
+  if (preferences.syncing) return '同步中…';
+  if (!preferences.cloudUpdatedAt) return '云端还没有这份配置';
+  return `云端更新于 ${new Date(preferences.cloudUpdatedAt).toLocaleString()}`;
+});
 
 const CREDITS = [
   {
@@ -141,6 +183,79 @@ const REPO_URL = 'https://github.com/elysiawen/SakuraMusic';
       <BackgroundPicker />
     </section>
 
+    <!-- 平台开关：放在播放偏好之前，它决定下面那些跨平台选项还有没有意义 -->
+    <section class="glass panel">
+      <div class="panel-title">
+        <AppIcon name="server" :size="17" />
+        <h2>平台</h2>
+        <span class="muted" style="font-size: 12px; margin-left: auto">
+          关掉后不再用它搜索与推荐
+        </span>
+      </div>
+
+      <div class="stack" style="gap: 8px">
+        <span class="muted" style="font-size: 11.5px; padding-left: 2px">
+          开关保存在 Sakura 账号下，登录后自动同步，换设备不用再设一遍。
+        </span>
+        <div class="row" style="gap: 8px; flex-wrap: wrap; align-items: center">
+          <button class="chip" type="button" :disabled="preferences.syncing" @click="restoreFromCloud">
+            <AppIcon name="refresh" :size="13" />
+            从云端重新读取
+          </button>
+          <span class="muted" style="font-size: 11.5px">{{ cloudUpdatedText }}</span>
+        </div>
+        <span v-if="preferences.cloudError" class="muted" style="font-size: 11.5px; color: var(--danger)">
+          {{ preferences.cloudError }}
+        </span>
+      </div>
+
+      <div
+        v-for="item in preferences.manifest"
+        :key="item.platform"
+        class="stack"
+        style="gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border)"
+      >
+        <ToggleSwitch
+          :model-value="preferences.isPlatformEnabled(item.platform)"
+          :label="`启用${PLATFORM_LABEL[item.platform]}`"
+          hint="关掉后这个平台的搜索、首页推荐、账号歌单一起停用；重新打开会恢复下面的设置"
+          @update:model-value="togglePlatform(item.platform, $event)"
+        />
+
+        <div
+          class="stack"
+          :style="{
+            gap: '12px',
+            paddingLeft: '12px',
+            borderLeft: '2px solid var(--border)',
+            opacity: preferences.isPlatformEnabled(item.platform) ? 1 : 0.5,
+          }"
+        >
+          <span class="muted" style="font-size: 11.5px">
+            {{
+              preferences.isPlatformEnabled(item.platform)
+                ? '参与以下功能'
+                : '平台已停用，下列设置会保留，重新打开后生效'
+            }}
+          </span>
+          <ToggleSwitch
+            v-for="capability in CAPABILITIES.filter((key) => item.capabilities[key] !== false)"
+            :key="capability"
+            :model-value="preferences.isEnabled(item.platform, capability)"
+            :disabled="!preferences.isPlatformEnabled(item.platform)"
+            :label="CAPABILITY_LABEL[capability]"
+            :hint="CAPABILITY_HINT[capability]"
+            @update:model-value="toggleCapability(item.platform, capability, $event)"
+          />
+        </div>
+      </div>
+
+      <span class="muted" style="display: block; margin-top: 14px; font-size: 11.5px; line-height: 1.7">
+        总开关关掉等于这个平台完全不参与（搜索、推荐、账号歌单一起失效）；只关某项能力则只影响那一项。
+        播放都不受影响：收藏、歌单、历史里已有的曲目，即使所属平台被关掉，也照常解析播放。
+      </span>
+    </section>
+
     <!-- 播放偏好 -->
     <section class="glass panel">
       <div class="panel-title">
@@ -164,12 +279,12 @@ const REPO_URL = 'https://github.com/elysiawen/SakuraMusic';
             </button>
           </div>
           <span class="muted" style="font-size: 11px">
-            「高清臻音」「超清母带」「沉浸环绕声」两个平台都有，但需要对应等级的会员；等级不够时会自动降级到能播的档位。
+            「高清臻音」「超清母带」「沉浸环绕声」各平台都有，但需要对应等级的会员；等级不够时会自动降级到能播的档位。
           </span>
         </div>
 
-        <div class="stack" style="gap: 8px">
-          <span class="field-label">音源偏好（同一首歌两个平台都有时优先使用）</span>
+        <div v-if="activePlatforms.length > 1" class="stack" style="gap: 8px">
+          <span class="field-label">音源偏好（同一首歌在多个平台都有时优先使用）</span>
           <div class="row" style="gap: 8px; flex-wrap: wrap">
             <button
               class="chip"
@@ -196,8 +311,10 @@ const REPO_URL = 'https://github.com/elysiawen/SakuraMusic';
         </div>
 
         <div class="stack" style="gap: 8px">
-          <span class="field-label">取流方式（按平台分别设置）</span>
-          <div v-for="platform in platforms" :key="platform" class="stack" style="gap: 8px">
+          <span class="field-label">
+            {{ activePlatforms.length > 1 ? '取流方式（按平台分别设置）' : '取流方式' }}
+          </span>
+          <div v-for="platform in activePlatforms" :key="platform" class="stack" style="gap: 8px">
             <span class="muted" style="font-size: 12px; font-weight: 650; padding-left: 2px">
               {{ PLATFORM_LABEL[platform] }}
             </span>

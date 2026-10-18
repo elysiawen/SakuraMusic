@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { credentialApi } from '@/api';
 import { roomApi, type TogetherOverview, type TogetherPartner } from '@/api/room';
-import { PLATFORM_LABEL, type Platform } from '@/api/types';
+import { PLATFORMS, PLATFORM_LABEL, type Platform } from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import CoverArt from '@/components/CoverArt.vue';
 import QrBindDialog from '@/components/QrBindDialog.vue';
@@ -40,7 +40,8 @@ const deletingAccount = ref(false);
 /** 删除账户前要输入的密码，服务端据此验证身份。 */
 const deletePassword = ref('');
 
-const platforms: Platform[] = ['netease', 'qq'];
+// 账户中心不受「平台开关」影响：绑定是身份层面的，开关只管要不要用它搜索/推荐。
+const platforms: Platform[] = PLATFORMS;
 
 const modeOf = (platform: Platform) => credentials.modeByPlatform[platform] ?? null;
 const profileOf = (platform: Platform) => credentials.profileOf(platform);

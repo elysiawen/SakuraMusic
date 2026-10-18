@@ -8,9 +8,16 @@ const props = defineProps<{
   label: string;
   /** 补充说明，写清楚开启/关闭的影响。 */
   hint?: string;
+  /** 只读展示：例如平台总开关关掉后，下面的能力开关先停用但保留当前值。 */
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{ (event: 'update:modelValue', value: boolean): void }>();
+
+function toggle(): void {
+  if (props.disabled) return;
+  emit('update:modelValue', !props.modelValue);
+}
 </script>
 
 <template>
@@ -27,9 +34,11 @@ const emit = defineEmits<{ (event: 'update:modelValue', value: boolean): void }>
       type="button"
       role="switch"
       :aria-checked="props.modelValue"
+      :aria-disabled="props.disabled"
       :aria-label="props.label"
-      :title="props.modelValue ? '点击关闭' : '点击开启'"
-      @click="emit('update:modelValue', !props.modelValue)"
+      :disabled="props.disabled"
+      :title="props.disabled ? '先打开平台总开关' : props.modelValue ? '点击关闭' : '点击开启'"
+      @click="toggle"
     >
       <span class="switch-knob" />
     </button>
@@ -62,6 +71,11 @@ const emit = defineEmits<{ (event: 'update:modelValue', value: boolean): void }>
   transition:
     left 0.2s ease,
     background 0.2s ease;
+}
+
+.switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .switch[aria-checked='true'] {

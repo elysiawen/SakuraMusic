@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { PLATFORM_COLOR, PLATFORM_LABEL, type Platform } from '@/api/types';
+import { usePreferencesStore } from '@/stores/preferences';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{
@@ -19,9 +20,19 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (event: 'switch', platform: Platform): void }>();
 
+const preferences = usePreferencesStore();
+
 const color = computed(() => PLATFORM_COLOR[props.platform]);
 const label = computed(() => PLATFORM_LABEL[props.platform]);
-const tip = computed(() => props.hint ?? (props.switchable ? `点击切换到${label.value}` : label.value));
+/*
+ * 平台被关掉后，老内容（收藏 / 歌单 / 历史）里还会有它的曲目，
+ * 徽标不能消失 —— 只降低视觉权重，说明它已不参与搜索与推荐，但歌还能放。
+ */
+const muted = computed(() => !preferences.isActive(props.platform));
+const tip = computed(() => {
+  const base = props.hint ?? (props.switchable ? `点击切换到${label.value}` : label.value);
+  return muted.value ? `${base}（在设置里关掉了这个平台，播放不受影响）` : base;
+});
 const iconName = computed(() => props.icon ?? (props.clickable ? 'refresh' : 'link'));
 </script>
 
@@ -29,7 +40,7 @@ const iconName = computed(() => props.icon ?? (props.clickable ? 'refresh' : 'li
   <button
     type="button"
     class="platform-badge"
-    :class="{ 'is-active': active, 'is-clickable': clickable }"
+    :class="{ 'is-active': active, 'is-clickable': clickable, 'is-muted': muted }"
     :style="{
       color: active ? '#fff' : color,
       backgroundColor: active ? color : 'transparent',
@@ -48,5 +59,14 @@ const iconName = computed(() => props.icon ?? (props.clickable ? 'refresh' : 'li
 <style scoped>
 .platform-badge.is-clickable:hover {
   filter: brightness(1.06) saturate(1.1);
+}
+
+/* 已在设置里关掉的平台：压暗但仍可点（老内容里的歌还要能切过去播）。 */
+.platform-badge.is-muted {
+  opacity: 0.5;
+}
+
+.platform-badge.is-muted:hover {
+  opacity: 0.9;
 }
 </style>

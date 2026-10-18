@@ -25,11 +25,13 @@ import PlaylistCard from '@/components/PlaylistCard.vue';
 import TrackList from '@/components/TrackList.vue';
 import { useToast } from '@/composables/useToast';
 import { useLibraryStore } from '@/stores/library';
+import { usePreferencesStore } from '@/stores/preferences';
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 const library = useLibraryStore();
+const preferences = usePreferencesStore();
 
 const TABS: Array<{ value: SearchType; label: string }> = [
   { value: 'song', label: '单曲' },
@@ -39,11 +41,14 @@ const TABS: Array<{ value: SearchType; label: string }> = [
 ];
 
 const EMPTY_HINT: Record<SearchType, string> = {
-  song: '换个关键词试试，或检查两个上游服务是否都在运行。',
-  artist: '试试更完整的歌手名，或者切到另一个平台看看。',
+  song: '换个关键词试试，或检查上游服务是否都在运行。',
+  artist: '试试更完整的歌手名，或者在设置里启用另一个平台。',
   album: '试试「歌手 + 专辑名」这样的组合关键词。',
   playlist: '试试歌单常见的主题词，比如「日语 女声」。',
 };
+
+/** 启用的平台一变，缓存与请求都要跟着变（参数的写法也进缓存键）。 */
+const platformSignature = computed(() => preferences.enabledPlatforms('search').join(','));
 
 const result = ref<SearchResult | null>(null);
 const loading = ref(false);
@@ -83,7 +88,8 @@ async function run(): Promise<void> {
   }
 
   // 每种类型、每一页各自缓存，来回切页签 / 返回上一页都不必重复请求。
-  const key = `${query}|${activeType.value}|${page.value}`;
+  // 平台开关也算进键里：关掉一个平台后不能命中关闭前的旧结果。
+  const key = `${query}|${activeType.value}|${page.value}|${platformSignature.value}`;
   const cached = resultCache.get(key);
   if (cached) {
     result.value = cached;
@@ -92,7 +98,13 @@ async function run(): Promise<void> {
 
   loading.value = true;
   try {
-    const data = await musicApi.search(query, activeType.value, page.value, 20);
+    const data = await musicApi.search(
+      query,
+      activeType.value,
+      page.value,
+      20,
+      preferences.enabledParam('search'),
+    );
     resultCache.set(key, data);
     result.value = data;
   } catch (error) {
@@ -106,7 +118,8 @@ async function run(): Promise<void> {
 watch(
   // 拼成字符串：q / type / page 任意一个变化都要重新取数，
   // 直接 watch 数组的话每次求值都是新引用，会多触发一轮。
-  () => `${route.query.q ?? ''}|${route.query.type ?? 'song'}|${route.query.page ?? 1}`,
+  () =>
+    `${route.query.q ?? ''}|${route.query.type ?? 'song'}|${route.query.page ?? 1}|${platformSignature.value}`,
   () => {
     const next = String(route.query.q ?? '');
     keyword.value = next;
@@ -186,8 +199,8 @@ async function onPlaylistCreated(playlist: Playlist): Promise<void> {
         <span class="muted" style="font-size: 12.5px">
           {{
             result
-              ? `${labelOf(result.type)} · 本页 ${currentCount} 条${result.type === 'song' ? '（已合并两个平台的重复曲目）' : ''}`
-              : '输入关键词后回车，将在两个平台同时搜索'
+              ? `${labelOf(result.type)} · 本页 ${currentCount} 条${result.type === 'song' ? '（已合并各平台的重复曲目）' : ''}`
+              : '输入关键词后回车，将在已启用的平台同时搜索'
           }}
         </span>
       </div>
