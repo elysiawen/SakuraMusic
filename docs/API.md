@@ -420,7 +420,7 @@ X-Sakura-Credential: <base64url(JSON)>
 {
   "ok": true,
   "time": "2026-09-22T10:00:00.000Z",
-  "upstreams": { "netease": "http://127.0.0.1:3000", "qq": "http://127.0.0.1:8080" }
+  "upstreams": { "netease": "http://127.0.0.1:3000", "qq": "http://127.0.0.1:3701" }
 }
 ```
 
@@ -526,7 +526,7 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 
 - **注意**：
   - `qrImage` 可直接当 `<img src>` 使用。
-  - `loginType: "mobile"`（QQ 音乐客户端扫码）与其它接口同源，都打在自建上游（`QQ_BASE_URL`，默认 `http://127.0.0.1:8080`）的 `/mobile/*` 上；扫码状态由上游那条 MQTT 长连接推送，**该请求最长可能耗时 40 秒**；上游未启动会返回 `504`（`上游服务不可用（…）`）。
+  - `loginType: "mobile"`（QQ 音乐客户端扫码）与其它接口同源，都打在自建上游（`QQ_BASE_URL`，默认 `http://127.0.0.1:3701`）的 `/mobile/*` 上；扫码状态由上游那条 MQTT 长连接推送，**该请求最长可能耗时 40 秒**；上游未启动会返回 `504`（`上游服务不可用（…）`）。
   - `loginType: "wx"`（微信扫码）：产出的凭据 musickey 以 `W_X_` 开头，`musicid` 是 19 位**伪 uin**（不是 QQ 号）。
     **现在可用**（实测：`check_expired` 为 False、免费曲目取地址 `result=0`、收藏接口正常返回）。
     一个提醒：早前有一批 wx 凭据在 QQ 的鉴权接口上不被承认（一律 `code=1000`、返回体 `uin` 为空），
@@ -1134,7 +1134,7 @@ GET  /api/track/:platform/:id/lyric   （可选，歌词）
 | `DB_SSL` | `auto` | `auto` / `true` / `false` |
 | `CREDENTIAL_KEY` | 自动生成 | 32 字节 base64；缺省时生成到 `gateway/.data/credential.key`。**这是解密已存凭据的唯一钥匙，不要丢** |
 | `NETEASE_BASE_URL` | `http://127.0.0.1:3700` | 网易云上游（自建 `netease-upstream/`） |
-| `QQ_BASE_URL` | `http://127.0.0.1:8080` | QQ 音乐上游（自建 `qq-upstream/`，含三种扫码登录） |
+| `QQ_BASE_URL` | `http://127.0.0.1:3701` | QQ 音乐上游（自建 `qq-upstream/`，含三种扫码登录） |
 | `QQ_STREAM_HOST` | `https://ws.stream.qqmusic.qq.com/` | QQ 音乐流地址前缀 |
 | `WEB_ORIGIN` | `http://localhost:5173` | CORS 白名单，逗号分隔多个 |
 | `COOKIE_SECURE` | `false` | 置 `true` 时会话 Cookie 带 `Secure`（HTTPS 部署时必须开） |

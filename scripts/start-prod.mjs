@@ -6,7 +6,7 @@
  *   2. 前端跑 `web/dist` 静态产物（内置静态服务 + /api 反代），而不是 Vite dev server；
  *   3. 缺产物时会先自动执行 `pnpm build`。
  *
- * 会拉起：网易云上游 :3700、QQ 音乐上游（自建）:8080、网关 :8787、前端 :6173。
+ * 会拉起：网易云上游 :3700、QQ 音乐上游（自建）:3701、网关 :8787、前端 :6173。
  * QQ 音乐上游里同时包含三种扫码登录（含需要 MQTT 长连接的「QQ 音乐 App 扫码」）。
  *
  * 用法：
@@ -42,6 +42,11 @@ const webPort = process.env.WEB_PORT?.trim() || '6173';
  * 需要临时换端口用 NETEASE_PORT 覆盖；改完记得同步 gateway/.env 的 NETEASE_BASE_URL，两者必须一致。
  */
 const neteasePort = process.env.NETEASE_PORT?.trim() || '3700';
+/**
+ * QQ 音乐上游监听端口，默认 3701（紧挨着网易云的 3700）。
+ * 需要临时换端口用 QQ_UPSTREAM_PORT 覆盖；改完记得同步 gateway/.env 的 QQ_BASE_URL，两者必须一致。
+ */
+const qqPort = process.env.QQ_UPSTREAM_PORT?.trim() || '3701';
 
 function fail(message) {
   console.error(`\n[sakura] ${message}\n`);
@@ -102,12 +107,13 @@ const tasks = [
   {
     name: 'qqmusic',
     label: 'QQ 音乐上游（自建）',
-    url: 'http://127.0.0.1:8080',
+    url: `http://127.0.0.1:${qqPort}`,
     // 自建上游不需要 uv：解释器由启动器自己挑（.runtime/qq-upstream-venv 优先）。
     command: process.execPath,
     args: [resolve(sakuraRoot, 'scripts/run-qq-upstream.mjs')],
     cwd: sakuraRoot,
     shell: false,
+    env: { QQ_UPSTREAM_PORT: qqPort },
   },
   {
     name: 'gateway',
@@ -196,7 +202,7 @@ console.log(`
  Sakura Music 生产模式已启动（按 Ctrl+C 一并关闭）
    前端入口   ${options.web ? `http://${webHost}:${webPort}` : '（已跳过，见上方提示）'}
    网关接口   http://127.0.0.1:8787/api/health
-   QQ 音乐上游 http://127.0.0.1:8080/health   （自建，含「QQ 音乐 App 扫码」的 MQTT 会话）
+   QQ 音乐上游 http://127.0.0.1:${qqPort}/health   （自建，含「QQ 音乐 App 扫码」的 MQTT 会话）
  首次启动请等待 10~30 秒，待上游就绪后再打开前端。
  长期运行建议交给进程守护：Linux 用 systemd，Windows 用 NSSM/WinSW 或 pm2。
 ──────────────────────────────────────────────

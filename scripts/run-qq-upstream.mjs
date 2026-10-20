@@ -3,7 +3,7 @@
  *
  * 它替代 QQMusicApi 仓库自带的 FastAPI web 层，只依赖 PyPI 发布版 `qqmusic-api-python`，
  * 因此不再受本地 checkout 停在 dev 分支的影响（详见 qq-upstream/app.py 顶部）。
- * 端口仍是 8080，路径与响应形状也保持一致，所以网关侧 `QQ_BASE_URL` 不用改。
+ * 端口默认 3701（与网易云上游 3700 相邻，读日志时好区分），路径与响应形状与原 web 层保持一致。
  *
  * 解释器选择顺序（越靠前越优先）：
  *   1. `QQ_UPSTREAM_PYTHON` 环境变量；
@@ -33,7 +33,7 @@ const fromEnv = process.env.QQ_UPSTREAM_PYTHON?.trim();
 const fromVenv = venvCandidates.find((candidate) => existsSync(candidate));
 const python = fromEnv || fromVenv || process.env.PYTHON?.trim() || (isWindows ? 'python.exe' : 'python');
 
-const port = process.env.QQ_UPSTREAM_PORT?.trim() || '8080';
+const port = process.env.QQ_UPSTREAM_PORT?.trim() || '3701';
 const host = process.env.QQ_UPSTREAM_HOST?.trim() || '127.0.0.1';
 
 if (!existsSync(entry)) {

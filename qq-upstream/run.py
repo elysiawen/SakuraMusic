@@ -2,7 +2,7 @@
 
 用法::
 
-    python qq-upstream/run.py            # 默认 127.0.0.1:8080，与原 web 层同一个端口
+    python qq-upstream/run.py            # 默认 127.0.0.1:3701，与网易云上游 3700 相邻
     QQ_UPSTREAM_PORT=8081 python run.py  # 换端口（便于新旧并跑对比）
 
 **必须单 worker**：扫码会话存在进程内存里（`session.QrSessions`），多 worker 会各存一份，
@@ -24,7 +24,7 @@ if str(BASE_DIR) not in sys.path:
 import uvicorn  # noqa: E402 - 必须在 sys.path 调整之后导入
 
 HOST = os.environ.get("QQ_UPSTREAM_HOST", "127.0.0.1").strip() or "127.0.0.1"
-PORT = int(os.environ.get("QQ_UPSTREAM_PORT", "8080"))
+PORT = int(os.environ.get("QQ_UPSTREAM_PORT", "3701"))
 LOG_LEVEL = os.environ.get("QQ_UPSTREAM_LOG_LEVEL", "info").strip() or "info"
 
 

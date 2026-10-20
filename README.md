@@ -26,7 +26,7 @@
      Cookie 头注入凭据    │                  │
                          ▼                  ▼
         ┌──────────────────┐  ┌────────────────────────────────┐
-        │ netease-upstream │  │ qq-upstream (:8080)            │
+        │ netease-upstream │  │ qq-upstream (:3701)            │
         │ (:3700)          │  │ 自建 QQ 音乐上游（FastAPI）      │
         │ 自建网易云上游     │  │ 含三种扫码，App 走 MQTT 长连接   │
         │ (Node + SDK)     │  │ 一个二维码一条连接               │
@@ -156,7 +156,7 @@ notepad gateway/.env   # 至少填好 DATABASE_URL
 |---|---|
 | `DATABASE_URL` | **必填**，指向你已有的 PostgreSQL |
 | `CREDENTIAL_KEY` | 可选。32 字节 base64 主密钥；留空时网关自动生成到 `gateway/.data/credential.key`（请妥善保管，删了旧凭据就解不开了） |
-| `NETEASE_BASE_URL` / `QQ_BASE_URL` | 两个上游地址，默认 `:3700` / `:8080` |
+| `NETEASE_BASE_URL` / `QQ_BASE_URL` | 两个上游地址，默认 `:3700` / `:3701` |
 | `WEB_ORIGIN` | 前端来源，默认 `http://localhost:5173` |
 | `ALLOW_REGISTER` | 是否开放注册，默认 `true` |
 
@@ -179,7 +179,7 @@ pnpm db:init      # 幂等建表 / 补列，也可等网关启动时自动执行
 pnpm start:all
 ```
 
-会依次拉起：网易云上游 `:3700`、QQ 音乐上游（自建）`:8080`、网关 `:8787`、前端 `:5173`。
+会依次拉起：网易云上游 `:3700`、QQ 音乐上游（自建）`:3701`、网关 `:8787`、前端 `:5173`。
 
 也可以分开启动，方便看日志：
 
@@ -333,7 +333,7 @@ pnpm start:prod
 ```
 
 它会先确保构建产物存在（缺 `gateway/dist` 或 `web/dist` 时自动执行 `pnpm build`），然后拉起
-**网易云上游 :3700、QQ 音乐上游（自建）:8080、网关（跑编译产物）:8787、前端静态服务 :6173**。
+**网易云上游 :3700、QQ 音乐上游（自建）:3701、网关（跑编译产物）:8787、前端静态服务 :6173**。
 浏览器直接开 <http://127.0.0.1:6173> 即可。
 
 | 参数 | 作用 |
@@ -427,7 +427,7 @@ ALLOW_REGISTER=false            # 先注册出首个管理员账号，再关掉�
 - **Linux**：为网关、两个上游各写一个 systemd unit（`Restart=always`，`WorkingDirectory` 指向各自目录）。
 - **Windows**：用 NSSM / WinSW 注册成服务，或 `pm2 start` 托管。
 
-防火墙只放行 `80` / `443`；`3700`、`8080`、`8787` 一律只听 `127.0.0.1`。
+防火墙只放行 `80` / `443`；`3700`、`3701`、`8787` 一律只听 `127.0.0.1`。
 
 ### 发版
 
@@ -464,7 +464,7 @@ Nginx 托管 `web/dist` 时**不用拷文件、不用重启 Nginx、不用重启
 然后确认版本真的换过来了：
 
 ```bash
-curl -s http://127.0.0.1:8080/health     # 会直接报出实际加载的 SDK 版本与路径
+curl -s http://127.0.0.1:3701/health     # 会直接报出实际加载的 SDK 版本与路径
 ```
 
 回退同理：把 `requirements.txt` 的 pin 改回去（或 `pip install qqmusic-api-python==<旧版本>`）再重启，
@@ -493,7 +493,7 @@ node gateway/dist/scripts/backfill-track-refs.js           # 生产（只装生�
 ## 常见问题
 
 **搜索返回“上游返回 4xx/5xx”**
-先在浏览器直接访问 `http://127.0.0.1:3700` 与 `http://127.0.0.1:8080` 确认上游已启动。网易云的未登录接口偶尔会触发风控，稍后重试通常即可。
+先在浏览器直接访问 `http://127.0.0.1:3700` 与 `http://127.0.0.1:3701` 确认上游已启动。网易云的未登录接口偶尔会触发风控，稍后重试通常即可。
 
 **某首歌播不出来 / 只有试听片段**
 会员或版权限制。网关已内置音质降级链（网易云 `hires→lossless→exhigh→standard`，QQ `母带→无损→320→128`），仍失败时可在播放条点击另一平台的标签手动切源。
@@ -508,11 +508,11 @@ node gateway/dist/scripts/backfill-track-refs.js           # 生产（只装生�
 
 **「QQ音乐扫码」提示手机端扫码服务不可用**
 QQ 音乐上游没起来 —— 这个能力已经并进上游服务，不再有单独的 sidecar。执行 `pnpm start:qq`，
-再用 `http://127.0.0.1:8080/health` 确认它还活着；起不来的排查见下面「QQ 音乐上游起不来」那条。
+再用 `http://127.0.0.1:3701/health` 确认它还活着；起不来的排查见下面「QQ 音乐上游起不来」那条。
 
 **QQ 音乐上游启动报「端口已被占用」**
-上一次没退干净（QQ 上游只有一个进程实例，`pnpm start:qq` 与 `pnpm start:all` 都会占 8080）：
-`Get-NetTCPConnection -LocalPort 8080 -State Listen | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }`
+上一次没退干净（QQ 上游只有一个进程实例，`pnpm start:qq` 与 `pnpm start:all` 都会占 3701）：
+`Get-NetTCPConnection -LocalPort 3701 -State Listen | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }`
 
 **网易云上游报 `xeapi public key is missing`**
 上游 SDK 启动时是「注册匿名 token + 取 xeapi 公钥」的顺序，两样都缓存在系统临时目录
@@ -550,7 +550,7 @@ ls -ld /tmp                                        # 正常应为 drwxrwxrwt
 （会创建 `.runtime/qq-upstream-venv` 并装好依赖），或手动指定解释器：
 `QQ_UPSTREAM_PYTHON=/path/to/python pnpm start:qq`。
 
-启动后访问 `http://127.0.0.1:8080/health`，它会直接报出**实际加载的 SDK 版本与路径** ——
+启动后访问 `http://127.0.0.1:3701/health`，它会直接报出**实际加载的 SDK 版本与路径** ——
 版本漂移（比如误用了 QQMusicApi 仓库里 dev 分支的可编辑安装）一眼就能看出来。
 
 **想换成原版上游（api-enhanced / QQMusicApi）**
@@ -573,7 +573,7 @@ ls -ld /tmp                                        # 正常应为 drwxrwxrwt
 所以行为一致：只缓存 200、不做请求合并。）
 
 **改了上游端口后网易云一直失败**
-默认端口：网易云 `3700`、QQ 音乐 `8080`、网关 `8787`。
+默认端口：网易云 `3700`、QQ 音乐 `3701`、网关 `8787`。
 `pnpm start:prod` 用环境变量 `NETEASE_PORT` 启动网易云上游，而网关侧读的是 `gateway/.env` 里的 `NETEASE_BASE_URL`——**两者必须一致**，否则网关会把请求打到没人监听的端口上（现象是所有网易云搜索/播放都失败，但进程看着都正常）。改端口时两个一起改。
 
 **收藏 / 歌单 / 播放历史里的歌手、专辑点不动**
