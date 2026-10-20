@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import { musicApi } from '@/api';
-import type { LyricResult } from '@/api/types';
+import type { LyricResult, PlayResolveResult } from '@/api/types';
 import {
   PREMIUM_QUALITIES,
   qualityLabel,
@@ -24,6 +24,31 @@ export type PlayMode = 'order' | 'all' | 'one' | 'shuffle';
  *   proxy  中转：始终经网关转发，用服务器带宽换稳定。
  */
 export type RouteMode = 'auto' | 'direct' | 'proxy';
+
+/**
+ * 一条由「一起听」房间提供的 CDN 直链（用的是房间内另一方的会员权益）。
+ *
+ * 只有直链，没有凭据：地址本身自带授权（网易云的 `auth`、QQ 的 `vkey`），
+ * 所以共享它不等于共享账号。
+ */
+export interface SharedStream {
+  url: string;
+  /** 直连需要的请求头。浏览器改不了 `Referer`，实测这两个平台的 CDN 并不校验它。 */
+  headers?: Record<string, string>;
+  /** 只拿到试听片段（提供方自己也没权限）。 */
+  trial?: boolean;
+  /** 提供方实际拿到的档位。 */
+  quality?: Quality;
+}
+
+/**
+ * 共享地址的提供者。返回 `null` 表示「这首没有可用的共享地址」，退回自己的解析。
+ *
+ * 由 room store 注入：它持有 `room-source` 事件带来的地址，也知道当前这一平台是不是在借别人的会员。
+ */
+export type SharedSourceProvider = (platform: Platform, trackKey: string) => SharedStream | null;
+
+
 
 interface PersistedPlayerState {
   volume: number;
@@ -233,6 +258,26 @@ export const usePlayerStore = defineStore('player', () => {
 
   /** 本次播放是否正在用直连地址；失败时据此决定要不要回退。 */
   const usingDirect = ref(false);
+  /**
+   * 当前这一首用的是不是「一起听」里对方提供的会员地址。
+   *
+   * 界面靠它常驻说明「这首为什么能播」——否则用户既不知道为什么突然能听无损，
+   * 也判断不出共享到底生效没有。
+   */
+  const usingShared = ref(false);
+  /**
+   * 一起听会员共享：房间把「别人解析好的直链」从这里递进来。
+   *
+   * 用回调而不是把地址塞进 store 状态：地址的生命周期由房间那边管（它有事件、知道什么时候失效），
+   * 播放器只在每次起播时问一句「这首有共享地址吗」，拿到就用、拿不到就自己解析。
+   */
+  let sharedSourceProvider: SharedSourceProvider | null = null;
+
+  function setSharedSourceProvider(fn: SharedSourceProvider | null): void {
+    sharedSourceProvider = fn;
+  }
+
+
   /** 回退所需的代理地址，仅在一次播放周期内有效。 */
   let directFallback: { proxy: string; platform: Platform } | null = null;
 
@@ -666,6 +711,8 @@ export const usePlayerStore = defineStore('player', () => {
 
     loading.value = true;
     error.value = '';
+    // 起播前先摘掉上一首的「共享」标识：解析失败提前返回时，不能让界面继续显示它。
+    usingShared.value = false;
     /*
      * 清掉上一次的"实际档位"：解析要等网络，这段时间它属于上一首，
      * 留着会让档位芯片与降级提示都停在上一次的结果上（明明是另一首歌）。
@@ -680,9 +727,31 @@ export const usePlayerStore = defineStore('player', () => {
     // 元素是否已被换成本次这首：换过之后失败就是「新歌放不了」，不能退回上一首。
     let srcSwapped = false;
     try {
-      const result = await musicApi.resolvePlay(source.platform, source.id, quality.value);
+      /*
+       * 一起听会员共享：房间里可能已经有对方解析好的直链。
+       *
+       * 有就优先用它——否则没会员的一方永远只能听到试听，共享面板就成了摆设。
+       * 但仍然解析一次**自己的**地址：直连被 CDN 拒绝时，那是唯一的回落路径。
+       * 自己解析失败而手上有共享地址时不算错，本来就是为了借别人的。
+       */
+      const shared = sharedSourceProvider?.(source.platform, track.key) ?? null;
+      const own = await musicApi.resolvePlay(source.platform, source.id, quality.value).catch(
+        (cause: unknown) => {
+          if (shared) return null;
+          throw cause;
+        },
+      );
       // 这次解析已被更晚的一次切歌取代：交给它落地，别再动音频元素。
       if (token !== loadToken) return;
+      const result: PlayResolveResult = shared
+        ? {
+            url: shared.url,
+            quality: quality.value,
+            actualQuality: shared.quality,
+            trial: shared.trial === true,
+            direct: { url: shared.url, headers: shared.headers ?? {} },
+          }
+        : (own as PlayResolveResult);
       // 上游没给地址（版权/会员限制之外的情况）：当作确定性播不了，让越权判定跳过这首歌。
       if (!result.url) {
         error.value = '该歌曲没有可用的播放地址';
@@ -709,14 +778,22 @@ export const usePlayerStore = defineStore('player', () => {
             ? false
             : Boolean(result.direct) && !proxyOnly.value.includes(source.platform);
       usingDirect.value = useDirect;
+      // 这一首用的到底是不是对方会员：界面常驻标识、以及「为什么会跳过」的解释都靠它。
+      usingShared.value = Boolean(shared);
       /*
        * 只有智能模式才准备回退。直连模式下用户要的就是「不通就失败」，
        * 偷偷回退到中转等于把他的设置改了。
        */
-      directFallback = mode === 'auto' ? { proxy: result.url, platform: source.platform } : null;
+      /*
+       * 共享地址被拒时回落到**自己的**解析结果，而不是共享地址本身——
+       * 后者就是刚刚失败的那条，等于没有回落。自己也没解析出来时只能原样暴露错误。
+       */
+      directFallback =
+        mode === 'auto' ? { proxy: own?.url ?? result.url, platform: source.platform } : null;
 
       element.src = useDirect && result.direct ? result.direct.url : result.url;
       srcSwapped = true;
+
       loadedKey = track.key;
       element.volume = volume.value;
       element.muted = muted.value;
@@ -1121,6 +1198,15 @@ export const usePlayerStore = defineStore('player', () => {
     setRouteMode,
     /** 当前这首走的是不是直连（false = 字节经网关转发）。 */
     usingDirect,
+    /** 当前这首用的是不是一起听里对方提供的会员地址。 */
+    usingShared,
+    /**
+     * 注入一起听会员共享的地址来源。
+     *
+     * 房间那边持有 `room-source` 事件带来的直链；播放器每次起播时问一次，
+     * 拿不到就按原来的路子自己解析。
+     */
+    setSharedSourceProvider,
     lyric,
     lyricLoading,
     expanded,

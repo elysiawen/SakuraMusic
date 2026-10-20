@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 「一起听」房间：二人共享一个播放现场。
  *
  * 与 `connect` 的多设备协议最大的不同是——**服务端是权威**。
@@ -31,7 +31,9 @@ export type RoomAction =
   | 'setQueue'
   | 'setMode'
   | 'ended'
-  | 'unplayable';
+  | 'unplayable'
+  | 'setEntitlement'
+  | 'ackEntitlement';
 
 const ACTIONS = new Set<RoomAction>([
   'play',
@@ -47,6 +49,8 @@ const ACTIONS = new Set<RoomAction>([
   'setMode',
   'ended',
   'unplayable',
+  'setEntitlement',
+  'ackEntitlement',
 ]);
 
 /**
@@ -108,6 +112,74 @@ export function isRoomMode(value: unknown): value is RoomMode {
   return value === 'order' || value === 'all' || value === 'one' || value === 'shuffle';
 }
 
+// ---- 会员共享：按平台分开，记录「这一平台的取流用谁的权益」 ----
+
+/**
+ * 支持借用会员的平台。
+ *
+ * 与上游 `Platform` 一致，且**必须**按平台分开设置：一首歌只属于一个平台，
+ * 取流时按 `track.platform` 读对应那一项，天然互不影响。
+ */
+export type EntitlementPlatform = 'netease' | 'qq';
+
+export const ENTITLEMENT_PLATFORMS: readonly EntitlementPlatform[] = ['netease', 'qq'];
+
+export function isEntitlementPlatform(value: unknown): value is EntitlementPlatform {
+  return value === 'netease' || value === 'qq';
+}
+
+/**
+ * 一次「借用对方会员」的请求，等待权益提供方确认。
+ *
+ * 为什么要有这一步：被选中的人等于把**自己的平台账号**借给房间里另一个人取流，
+ * 这既可能违反平台用户协议，也会让他的播放记录与并发设备数被占用。所以不能由
+ * 发起方单方面决定——只有他自己点了确认，才允许生效。
+ */
+export interface EntitlementRequest {
+  platform: EntitlementPlatform;
+  /** 权益提供方。生效后，房间内所有人都用他的凭据解析这一平台的流。 */
+  targetUserId: string;
+  /** 发起人。可能不是 targetUserId——那正是需要确认的原因。 */
+  requestedBy: string;
+  /** 发起时刻（epoch 毫秒），仅用于展示与排查。 */
+  at: number;
+}
+
+export interface EntitlementPendingView {
+  platform: EntitlementPlatform;
+  targetUserId: string;
+  requestedBy: string;
+  at: number;
+}
+
+export interface RoomEntitlementView {
+  /** 平台 → 提供权益的成员 userId；`null` = 各用各的（默认）。 */
+  active: Record<EntitlementPlatform, string | null>;
+  /** 平台 → 等待提供方确认的请求。 */
+  pending: Record<EntitlementPlatform, EntitlementPendingView | null>;
+}
+
+/**
+ * 一条由**服务端**用权益提供方凭据解析出来、返回给受方的播放地址。
+ *
+ * 这里只有地址，没有任何凭据：CDN 直链本身就自带授权（网易云的 `auth`、QQ 的
+ * `vkey`），拿到它不需要再回查账号。供方的 cookie 全程不出网关。
+ */
+export interface RoomSourceView {
+  platform: EntitlementPlatform;
+  /** 这条地址属于房间里的哪首歌。对不上说明是切歌后的迟到上报，直接丢弃。 */
+  trackKey: string;
+  url: string;
+  /** 直连 CDN 需要的请求头（Referer / Origin / UA）。浏览器设不了，只能原生端用。 */
+  headers: Record<string, string>;
+  /** 实际拿到的音质档位；供方降级时受方也能照实显示。 */
+  quality?: string;
+  /** 是否只拿到试听片段（供方自己也没权限时）。 */
+  trial: boolean;
+  /** 谁提供的这条地址。 */
+  ownerUserId: string;
+}
+
 /** 单个房间的队列上限。 */
 const MAX_QUEUE = 200;
 /**
@@ -165,6 +237,15 @@ interface Room {
    * 顺序停下 / 列表循环回头 / 单曲重放 / 随机跳。
    */
   mode: RoomMode;
+  /**
+   * 会员共享：每个平台记录「用谁的权益取流」，`null` = 各用各的。
+   *
+   * 这里存的只是**授权关系**，不存任何凭据或播放地址——凭据永远不出网关，
+   * 地址由权益提供方在播放时现解析（见 docs/together-protocol.md）。
+   */
+  entitlements: Record<EntitlementPlatform, string | null>;
+  /** 待权益提供方确认的请求，按平台各存一条。 */
+  entitlementPending: Record<EntitlementPlatform, EntitlementRequest | null>;
   /** 队列版本号，随队列变化递增。 */
   version: number;
   /** 本房间内已被判定「播不了」的曲目 key（换歌单时清空），避免两端来回弹。 */
@@ -237,6 +318,11 @@ export interface RoomView {
   togetherSessionSeconds: number;
   /** 此刻是否正在走表（两人都在房间里）。客户端据此自行推演到「现在」。 */
   togetherCounting: boolean;
+  /**
+   * 会员共享状态（按平台）。快照里带上，客户端冷启动/重连后不必再单独拉一次。
+   * 实时变化另有一条 `room-entitlement` 事件，见 [pushEntitlement]。
+   */
+  entitlement: RoomEntitlementView;
 }
 
 export interface RoomPlaybackView {
@@ -528,6 +614,14 @@ function memberView(room: Room, member: RoomMember, self?: RoomSelf): RoomMember
   };
 }
 
+function entitlementView(room: Room): RoomEntitlementView {
+  // 逐项拷贝：view 会被序列化交给客户端，不把内部状态对象直接暴露出去。
+  return {
+    active: { ...room.entitlements },
+    pending: { ...room.entitlementPending },
+  };
+}
+
 function roomView(room: Room, self?: RoomSelf): RoomView {
   return {
     code: room.code,
@@ -539,6 +633,7 @@ function roomView(room: Room, self?: RoomSelf): RoomView {
     index: room.index,
     version: room.version,
     ...togetherView(room),
+    entitlement: entitlementView(room),
   };
 }
 
@@ -599,6 +694,20 @@ function pushPlayback(
       ...extra,
       serverNow: Date.now(),
     });
+  }
+}
+
+/**
+ * 推送会员共享状态。
+ *
+ * 走独立事件而不是重推整个 `room`：队列可能有 200 首，改一次共享没必要把它整个再传一遍。
+ * 成员离开导致共享失效时不发这条——那时调用方本来就会 [pushRoom]，而快照里带着
+ * `entitlement` 字段（见 [roomView]），客户端两处都能拿到最新值。
+ */
+function pushEntitlement(room: Room): void {
+  const payload = { ...entitlementView(room), serverNow: Date.now() };
+  for (const member of room.members) {
+    sendToMemberDevices(member, 'room-entitlement', payload);
   }
 }
 
@@ -717,6 +826,19 @@ function removeMember(room: Room, member: RoomMember): void {
   deviceRoom.delete(deviceKey(member.userId, member.deviceId));
   const at = room.members.indexOf(member);
   if (at >= 0) room.members.splice(at, 1);
+
+  /*
+   * 权益提供方离开了，共享必须立刻失效：留着一个指向空座位的授权，
+   * 下次播放就会去取一个已经不在房间里的人的凭据（取得到，但没人同意过）。
+   * 顺带清掉他参与的待确认请求，否则另一个人会一直等一个永远不会来的确认。
+   */
+  for (const platform of ENTITLEMENT_PLATFORMS) {
+    if (room.entitlements[platform] === member.userId) room.entitlements[platform] = null;
+    const pending = room.entitlementPending[platform];
+    if (pending && (pending.targetUserId === member.userId || pending.requestedBy === member.userId)) {
+      room.entitlementPending[platform] = null;
+    }
+  }
 }
 
 function destroyRoom(room: Room): void {
@@ -892,6 +1014,9 @@ export function createRoom(
     positionAt: Date.now(),
     duration: 0,
     mode: isRoomMode(options?.mode) ? options.mode : 'order',
+    // 默认各用各的：共享必须由双方显式开启，绝不替用户预设。
+    entitlements: { netease: null, qq: null },
+    entitlementPending: { netease: null, qq: null },
     version: 0,
     skipped: new Set(),
     pair: null,
@@ -1012,7 +1137,12 @@ export function applyAction(
 
   const data = (payload ?? {}) as Record<string, unknown>;
   const hadTrack = currentTrack(room) !== null;
-  advance(room);
+  /*
+   * 授权类动作不动播放状态，跳过 advance：那一步会把进度推到此刻并重新盖章，
+   * 对「改一个共享设置」毫无意义，还会让下一帧播放快照平白跳一下。
+   */
+  const isEntitlement = action === 'setEntitlement' || action === 'ackEntitlement';
+  if (!isEntitlement) advance(room);
 
   let queueChanged = false;
   let extra: { skipReason?: 'unplayable'; skippedTitle?: string } | undefined;
@@ -1169,11 +1299,117 @@ export function applyAction(
       skipToNextPlayable(room);
       break;
     }
+
+    case 'setEntitlement': {
+      /*
+       * 「会员共享」的三选一落点：某个平台用谁的权益。
+       * - targetUserId 为空：回到「各用各的」。谁都能操作——**撤销共享不需要对方同意**。
+       * - targetUserId 是自己：自己分享自己的会员，自己已经有这个意向，直接生效。
+       * - targetUserId 是对方：只是**发起请求**，必须他本人确认后才生效（见 ackEntitlement）。
+       */
+      if (room.kind !== 'duo') {
+        throw badRequest('会员共享只在双人房开放', 'entitlement_duo_only');
+      }
+      const platform = data.platform;
+      if (!isEntitlementPlatform(platform)) throw badRequest('平台不合法', 'invalid_platform');
+
+      const rawTarget = data.targetUserId;
+      if (rawTarget === null || rawTarget === undefined || rawTarget === '') {
+        room.entitlements[platform] = null;
+        room.entitlementPending[platform] = null;
+        break;
+      }
+
+      const targetUserId = String(rawTarget);
+      const target = room.members.find((item) => item.userId === targetUserId);
+      if (!target) throw badRequest('对方不在房间里', 'entitlement_target_missing');
+
+      if (targetUserId === userId) {
+        room.entitlements[platform] = userId;
+        room.entitlementPending[platform] = null;
+      } else {
+        room.entitlementPending[platform] = {
+          platform,
+          targetUserId,
+          requestedBy: userId,
+          at: Date.now(),
+        };
+      }
+      break;
+    }
+
+    case 'ackEntitlement': {
+      const platform = data.platform;
+      if (!isEntitlementPlatform(platform)) throw badRequest('平台不合法', 'invalid_platform');
+      const pending = room.entitlementPending[platform];
+      if (!pending) throw badRequest('没有待确认的共享请求', 'entitlement_request_missing');
+      // 只有被选中的那个账号能点头，而且是他账号下的任何一台设备都算。
+      if (pending.targetUserId !== userId) {
+        throw forbidden('只有被借用的一方可以确认', 'entitlement_not_target');
+      }
+      // 拒绝也要清掉请求，否则发起方会一直停在「等待对方确认」。
+      if (data.accept === true) room.entitlements[platform] = pending.targetUserId;
+      room.entitlementPending[platform] = null;
+      break;
+    }
   }
 
   syncDuration(room);
   if (queueChanged) pushRoom(room);
+  if (isEntitlement) {
+    // 只推授权状态，不重推队列，也不碰播放帧。
+    pushEntitlement(room);
+    return;
+  }
   pushPlayback(room, extra);
+}
+
+/**
+ * 校验「借别人的会员取流」请求，返回该用谁的凭据、解析哪一首。
+ *
+ * 受方全程不接触任何凭据：他只声明「我要这个平台的当前这首」，由服务端拿权益提供方
+ * 存在服务器上的凭据去解析（见 routes/rooms.ts 的 `POST /api/rooms/source`）。
+ *
+ * 四个校验缺一条，这个接口就会变成「任何登录用户都能白嫖别人的会员」：
+ * - 我是这个房间的成员（且是这台设备对应的席位）
+ * - 这个平台确实开了共享
+ * - 提供方还在房间里（授权可能刚被撤销）
+ * - 曲目是房间**当前**这一首，且确实属于这个平台
+ */
+export function sharedSourceTarget(
+  userId: string,
+  deviceIdRaw: string,
+  platformRaw: unknown,
+  trackKeyRaw: unknown,
+): { platform: EntitlementPlatform; ownerUserId: string; trackKey: string; trackId: string } {
+  const deviceId = String(deviceIdRaw ?? '').trim();
+  const room = roomOf(userId, deviceId);
+  if (!room) throw notFound('你不在任何一起听房间里', 'room_not_found');
+  if (!memberOf(room, userId, deviceId)) throw forbidden('你不在这个房间里', 'not_a_member');
+
+  const platform = platformRaw;
+  if (!isEntitlementPlatform(platform)) throw badRequest('平台不合法', 'invalid_platform');
+
+  const ownerUserId = room.entitlements[platform];
+  if (!ownerUserId) throw badRequest('该平台没有开启会员共享', 'entitlement_not_active');
+  // 自己就是提供方：走自己的正常解析即可，不必绕共享这条路。
+  if (ownerUserId === userId) {
+    throw badRequest('你是该平台的权益提供方，直接用自己即可', 'entitlement_is_self');
+  }
+
+  const owner = room.members.find((item) => item.userId === ownerUserId);
+  if (!owner) throw badRequest('权益提供方已离开房间', 'entitlement_owner_gone');
+
+  const track = currentTrack(room);
+  if (!track) throw badRequest('房间里还没有可播放的歌曲', 'room_empty');
+  if (String(trackKeyRaw ?? '') !== track.key) {
+    throw badRequest('曲目已经切走了，请刷新后重试', 'track_mismatch');
+  }
+
+  const source = track.sources.find((item) => item.platform === platform);
+  if (!source) throw badRequest('当前曲目不属于该平台', 'platform_mismatch');
+
+  return { platform, ownerUserId, trackKey: track.key, trackId: source.id };
 }
 
 /**

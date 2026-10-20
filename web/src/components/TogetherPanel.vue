@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import type { EntitlementPlatform, RoomEntitlementPending } from '@/api/room';
 import { useRoomStore } from '@/stores/room';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
@@ -72,6 +73,109 @@ const totalText = computed(() => {
   void tick.value;
   return formatTogetherDuration(room.togetherLive());
 });
+
+/* ---- 会员共享（按平台分开） ---- */
+
+const PLATFORM_LABEL: Record<EntitlementPlatform, string> = {
+  netease: '网易云音乐',
+  qq: 'QQ 音乐',
+};
+
+const PLATFORMS: EntitlementPlatform[] = ['netease', 'qq'];
+
+/** 我的账号 id（这里用账号级成员，旁观时也对得上）。 */
+const myUserId = computed(() => room.accountMember?.userId ?? null);
+
+/**
+ * 两个平台各一行，三选一的当前值。
+ *
+ * `ownerId` 为 `null` = 各用各的（默认）；等于我的 id = 我在提供；等于对方 = 用对方的。
+ */
+const shareRows = computed(() =>
+  PLATFORMS.map((platform) => ({
+    platform,
+    label: PLATFORM_LABEL[platform],
+    ownerId: room.entitlement.active[platform] ?? null,
+    pending: room.entitlement.pending[platform] ?? null,
+  })),
+);
+
+/** 需要**我**点头的请求：对方想用我的会员。 */
+const pendingForMe = computed(() => room.entitlementRequestsForMe);
+
+/** 我发出去、还没被确认的请求。 */
+const pendingFromMe = computed(() => {
+  const out: RoomEntitlementPending[] = [];
+  for (const platform of PLATFORMS) {
+    const item = room.entitlement.pending[platform];
+    if (item && item.requestedBy === myUserId.value) out.push(item);
+  }
+  return out;
+});
+
+/** 我正在提供权益的平台（用于常驻提示，避免用户忘了自己开着共享）。 */
+const sharedByMe = computed(() => room.mySharedPlatforms.map((platform) => PLATFORM_LABEL[platform]));
+
+/**
+ * 唯一一行状态说明。
+ *
+ * 面板里只留**必须说**的那句：等待对方确认（功能性的），或「你的播放会被记账」（合规性的）。
+ * 「正在借用中」不在这里重复——播放条上已经有「共享」标记，说第二遍只会把面板塞满。
+ */
+const shareStatus = computed(() => {
+  if (pendingFromMe.value.length) {
+    const labels = pendingFromMe.value.map((item) => PLATFORM_LABEL[item.platform]);
+    return `已发出请求，等 TA 确认${labels.join('、')}`;
+  }
+  if (sharedByMe.value.length) return 'TA 的播放会记在你的账号下';
+  return '';
+});
+
+/**
+ * 切换某平台的权益归属。
+ *
+ * 选对方时只是**发起请求**，不弹窗——真正需要知情并承担风险的是对方，
+ * 由 TA 在自己的界面上确认（见 [confirmShare]）。
+ */
+function chooseShare(platform: EntitlementPlatform, targetUserId: string | null): void {
+  const current = room.entitlement.active[platform] ?? null;
+  const pending = room.entitlement.pending[platform] ?? null;
+  // 已经是这个状态、或已经发过同一个请求：不重复打扰服务端和对方。
+  if (current === targetUserId) return;
+  if (targetUserId && pending?.targetUserId === targetUserId) return;
+
+  room.setEntitlement(platform, targetUserId);
+  if (targetUserId && targetUserId !== myUserId.value) {
+    toast.info('已发起请求，等待 TA 确认');
+  }
+}
+
+/**
+ * 权益提供方确认/拒绝。
+ *
+ * 风险告知放在这里而不是发起方那边：被借用的是 TA 的账号，只有 TA 需要真正知情。
+ */
+async function confirmShare(platform: EntitlementPlatform, accept: boolean): Promise<void> {
+  if (accept) {
+    const ok = await confirm.ask({
+      title: `把${PLATFORM_LABEL[platform]}的会员借给 TA？`,
+      message: '同意后，TA 会用你的会员权益播放这一平台的歌。',
+      // 逐条列后果：连成一段时只会被扫一眼就点掉。
+      points: [
+        { text: '可能违反平台协议，账号被限制或封禁', danger: true },
+        { text: 'TA 的播放会记在你账号的播放记录里' },
+        { text: '会占用你账号的并发设备数' },
+      ],
+      note: '随时可以切回「各自」，或退出房间来终止。',
+      confirmLabel: '同意共享',
+      // 这里是「关掉弹窗」，请求还挂在服务端——拒绝是下方卡片上的按钮，语义不能混。
+      cancelLabel: '取消',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  room.ackEntitlement(platform, accept);
+}
 
 function initial(nickname: string): string {
   return nickname.trim().slice(0, 1) || '友';
@@ -311,6 +415,79 @@ async function dissolveRoom(): Promise<void> {
         </span>
         <strong>{{ totalText }}</strong>
       </div>
+    </div>
+
+    <!--
+      会员共享：两个平台各一行三选一。
+      默认「各自」；选「用 TA 的」只是发起请求，必须 TA 本人确认才生效。
+    -->
+    <div v-if="!room.spectating && room.partner" class="duo-share">
+      <div class="duo-share-head">
+        <span class="duo-share-title">会员共享</span>
+        <!--
+          「会员不代表任意歌曲可播」这类说明挂在这里，而不是常年占一行正文：
+          它只在有人想深究时才有用，平时是噪音。
+        -->
+        <span
+          class="duo-share-info"
+          title="会员状态来自平台账号，不代表任意歌曲可播（数字专辑、独家内容不随会员解锁）"
+        >
+          ?
+        </span>
+      </div>
+
+      <div v-for="row in shareRows" :key="row.platform" class="duo-share-row">
+        <span class="duo-share-label">{{ row.label }}</span>
+        <div class="duo-share-seg" role="group" :aria-label="`${row.label}会员`">
+          <button
+            type="button"
+            class="duo-share-opt"
+            :class="{ 'is-on': !row.ownerId }"
+            @click="chooseShare(row.platform, null)"
+          >
+            各自
+          </button>
+          <button
+            type="button"
+            class="duo-share-opt"
+            :class="{ 'is-on': Boolean(myUserId) && row.ownerId === myUserId }"
+            :disabled="!myUserId"
+            @click="chooseShare(row.platform, myUserId)"
+          >
+            用我的
+          </button>
+          <button
+            type="button"
+            class="duo-share-opt"
+            :class="{ 'is-on': Boolean(row.ownerId) && row.ownerId === room.partner?.userId }"
+            :disabled="!room.partner"
+            @click="chooseShare(row.platform, room.partner?.userId ?? null)"
+          >
+            用 TA 的
+          </button>
+        </div>
+      </div>
+
+      <!-- 全块唯一需要动手的地方：给边框和主按钮，别混在说明文字里 -->
+      <div v-for="item in pendingForMe" :key="item.platform" class="duo-share-request">
+        <span class="duo-share-request-text">
+          {{ room.partner?.nickname ?? 'TA' }} 想用你的{{ PLATFORM_LABEL[item.platform] }}会员
+        </span>
+        <div class="duo-share-request-actions">
+          <button
+            class="duo-share-mini is-primary"
+            type="button"
+            @click="confirmShare(item.platform, true)"
+          >
+            同意
+          </button>
+          <button class="duo-share-mini" type="button" @click="confirmShare(item.platform, false)">
+            拒绝
+          </button>
+        </div>
+      </div>
+
+      <p v-if="shareStatus" class="duo-share-status">{{ shareStatus }}</p>
     </div>
 
     <!--
@@ -714,6 +891,140 @@ async function dissolveRoom(): Promise<void> {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* ---- 会员共享：两行分段控件，状态只说一句 ---- */
+.duo-share {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.duo-share-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.duo-share-title {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+/* 「会员不代表任意歌曲可播」挂在问号上，不占正文。 */
+.duo-share-info {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  font-size: 9px;
+  line-height: 1;
+  cursor: help;
+}
+
+.duo-share-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.duo-share-label {
+  flex: none;
+  width: 64px;
+  color: var(--text-soft);
+}
+
+/* 分段控件：三格等宽，选中整块填色——比描边更容易一眼看出「谁在出会员」。 */
+.duo-share-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  flex: 1;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.duo-share-opt {
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.duo-share-opt:hover:not(:disabled):not(.is-on) {
+  background: var(--surface-hover);
+}
+
+.duo-share-opt.is-on {
+  background: var(--brand-600);
+  color: #fff;
+}
+
+.duo-share-opt:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 待确认：全块唯一需要动手的地方，给主色边框把它拎出来。 */
+.duo-share-request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--brand-500);
+  background: color-mix(in srgb, var(--brand-500) 8%, transparent);
+}
+
+.duo-share-request-text {
+  min-width: 0;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.duo-share-request-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.duo-share-mini {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.duo-share-mini.is-primary {
+  border-color: var(--brand-600);
+  background: var(--brand-600);
+  color: #fff;
+}
+
+.duo-share-status {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* 双人房唯一的动作：占满一行，别让它看起来像个次要按钮。 */

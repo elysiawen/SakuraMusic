@@ -61,6 +61,44 @@ export interface RoomMember {
  */
 export type RoomLostReason = 'seat_taken';
 
+/** 支持「借用对方会员」的平台。按平台分开设置，互不影响。 */
+export type EntitlementPlatform = 'netease' | 'qq';
+
+/** 一次等待权益提供方确认的共享请求。 */
+export interface RoomEntitlementPending {
+  platform: EntitlementPlatform;
+  /** 权益提供方：他的会员会被房间内所有人使用。 */
+  targetUserId: string;
+  /** 发起人（可能不是 targetUserId，那正是需要确认的原因）。 */
+  requestedBy: string;
+  at: number;
+}
+
+/**
+ * 会员共享状态，按平台分开。
+ *
+ * `active[platform]` 是提供权益的成员 userId，`null` = 各用各的（默认）。
+ * 它与凭据无关：服务端只存「谁授权了」，不存 cookie、也不存播放地址。
+ */
+export interface RoomEntitlement {
+  active: Record<EntitlementPlatform, string | null>;
+  pending: Record<EntitlementPlatform, RoomEntitlementPending | null>;
+}
+
+/** 一条由权益提供方解析好、分发给房间内其他人的 CDN 直链（`room-source` 事件）。 */
+export interface RoomSource {
+  platform: EntitlementPlatform;
+  /** 属于哪首歌。与当前曲目对不上就丢弃（切歌竞态）。 */
+  trackKey: string;
+  url: string;
+  /** 直连需要的请求头。浏览器设不了 `Referer`，所以 Web 端失败时回落自己的代理地址。 */
+  headers: Record<string, string>;
+  quality?: string;
+  /** 只拿到试听片段（提供方自己也没权限）。 */
+  trial: boolean;
+  ownerUserId: string;
+}
+
 /** 房间全量快照（成员 + 队列），随 `room` 事件下发。 */
 export interface RoomView {
   code: string;
@@ -83,6 +121,8 @@ export interface RoomView {
   togetherSessionSeconds: number;
   /** 此刻是否正在走表（两人都在房间里）。为 true 时客户端自行把它推演到「现在」。 */
   togetherCounting: boolean;
+  /** 会员共享状态（按平台）。随快照下发，冷启动/重连后不必再单独拉。 */
+  entitlement: RoomEntitlement;
 }
 
 /** 房间播放态，随 `room-playback` 事件下发。 */
@@ -115,7 +155,11 @@ export type RoomAction =
   /** 改播放模式（两端共享，服务端据此决定自然播完往哪走）。 */
   | 'setMode'
   | 'ended'
-  | 'unplayable';
+  | 'unplayable'
+  /** 改某平台的权益归属：`targetUserId` 为空 = 各自；是自己 = 直接分享；是对方 = 发起请求。 */
+  | 'setEntitlement'
+  /** 权益提供方确认/拒绝一次共享请求。 */
+  | 'ackEntitlement';
 
 export interface RoomActionPayload {
   index?: number;
@@ -128,6 +172,12 @@ export interface RoomActionPayload {
   queue?: unknown[];
   /** `setMode` 用：新的播放模式。 */
   mode?: RoomMode;
+  /** `setEntitlement` / `ackEntitlement` 用：哪个平台。 */
+  platform?: EntitlementPlatform;
+  /** `setEntitlement` 用：用谁的权益；`null` = 回到各用各的。 */
+  targetUserId?: string | null;
+  /** `ackEntitlement` 用：接受为 true，拒绝为 false。 */
+  accept?: boolean;
 }
 
 export interface RoomPreview {
@@ -216,6 +266,51 @@ export const roomApi = {
 
   act: (input: { deviceId: string; action: RoomAction; payload?: RoomActionPayload }) =>
     apiRequest<{ ok: boolean }>('/api/rooms/action', { method: 'POST', body: input }),
+
+  /**
+   * 改某平台的权益归属。
+   *
+   * `targetUserId` 为空 = 回到各用各的（撤销不需要对方同意）；
+   * 传自己 = 直接分享；传对方 = 只是**发起请求**，要等对方 `ackEntitlement`。
+   */
+  setEntitlement: (input: {
+    deviceId: string;
+    platform: EntitlementPlatform;
+    targetUserId: string | null;
+  }) =>
+    apiRequest<{ ok: boolean }>('/api/rooms/action', {
+      method: 'POST',
+      body: {
+        deviceId: input.deviceId,
+        action: 'setEntitlement',
+        payload: { platform: input.platform, targetUserId: input.targetUserId },
+      },
+    }),
+
+  /** 权益提供方确认（`accept: true`）或拒绝一次共享请求。 */
+  ackEntitlement: (input: { deviceId: string; platform: EntitlementPlatform; accept: boolean }) =>
+    apiRequest<{ ok: boolean }>('/api/rooms/action', {
+      method: 'POST',
+      body: {
+        deviceId: input.deviceId,
+        action: 'ackEntitlement',
+        payload: { platform: input.platform, accept: input.accept },
+      },
+    }),
+
+  /**
+   * 借对方的会员取一条播放地址。
+   *
+   * 解析在**服务端**完成：它拿权益提供方存在服务器上的凭据去换 CDN 直链，
+   * 受方只拿到一条地址，全程不接触任何凭据。
+   * 对方用的是「仅本机」凭据时服务端根本拿不到，会返回 `credential_not_on_server`。
+   */
+  fetchSource: (input: {
+    deviceId: string;
+    platform: EntitlementPlatform;
+    trackKey: string;
+    quality: string;
+  }) => apiRequest<RoomSource>('/api/rooms/source', { method: 'POST', body: input }),
 
   preview: (code: string) =>
     apiRequest<RoomPreview>(`/api/rooms/${encodeURIComponent(code)}`),

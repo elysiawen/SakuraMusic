@@ -100,6 +100,18 @@ const addOpen = ref(false);
             有当前曲目就显示，不额外等「开始取流」——Web 端浏览器禁止设置 Referer，
             直连基本必然被 CDN 拒绝，所以这里写「中转」不会是错的。
           -->
+          <!--
+            这首用的是「一起听」里对方的会员权益。必须常驻显示：
+            否则用户既不知道为什么会突然能播，也判断不出共享有没有真正生效。
+          -->
+          <span
+            v-if="player.usingShared"
+            class="tag"
+            style="color: var(--brand-600)"
+            title="这首用的是「一起听」里对方提供的会员权益，不是你的账号"
+          >
+            共享
+          </span>
           <span
             class="tag"
             style="color: var(--text-soft)"

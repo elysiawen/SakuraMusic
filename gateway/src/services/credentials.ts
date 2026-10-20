@@ -258,6 +258,28 @@ export async function resolveCredential(
   return { platform, cookie: bundle.cookie, source: 'server', profile: bundle.profile };
 }
 
+/**
+ * 取某个用户**存在服务器上**的凭据，完全不看请求头。
+ *
+ * 会员共享靠它：受方要用供方的会员，就意味着服务端必须能自己拿供方的凭据去换地址。
+ * 「仅本机」模式的凭据只存在于那台浏览器里，网关根本拿不到——这不是保守限制，
+ * 是物理上做不到。所以那种情况下共享直接不可用，返回 `null` 让调用方说清楚。
+ */
+export async function loadStoredCookie(userId: string, platform: Platform): Promise<string | null> {
+  const bundle = await loadServerBundle(userId, platform);
+  if (!bundle) return null;
+
+  if (platform === 'qq' && qqCredentialExpired(bundle.raw)) {
+    try {
+      const refreshed = await refreshServerCredential(userId, platform);
+      if (refreshed) return refreshed.cookie;
+    } catch {
+      // 刷新失败就用旧凭据，上游自己会决定要不要拒。
+    }
+  }
+  return bundle.cookie;
+}
+
 /** 便捷方法：只取 Cookie 字符串或 null。 */
 export async function resolveCookie(
   request: FastifyRequest,

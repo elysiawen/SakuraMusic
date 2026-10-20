@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import { badRequest } from '../lib/errors';
+import { loadStoredCookie } from '../services/credentials';
 import { requireUser } from '../services/users';
 import {
   applyAction,
@@ -7,7 +9,9 @@ import {
   joinRoom,
   leaveRoom,
   roomPreview,
+  sharedSourceTarget,
 } from '../services/rooms';
+import { probeStream } from '../services/stream';
 import { togetherOverview, togetherPartnerDetail } from '../services/roomStats';
 
 /**
@@ -84,6 +88,47 @@ export async function registerRoomRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true };
     },
   );
+
+  /**
+   * 借对方的会员取流：**服务端**用权益提供方的凭据解析，直接把地址返回给受方。
+   *
+   * 受方不需要、也拿不到任何凭据；供方的 cookie 全程不出网关。
+   *
+   * 前提是供方把凭据存在了服务器上。用「仅本机」模式时网关根本拿不到那份 cookie，
+   * 这里会明确报 `400 credential_not_on_server`，而不是假装成功然后让播放静默失败。
+   */
+  app.post<{
+    Body: { deviceId?: string; platform?: string; trackKey?: string; quality?: string };
+  }>('/api/rooms/source', async (request) => {
+    const user = await requireUser(request);
+    const body = request.body ?? {};
+    const target = sharedSourceTarget(
+      user.id,
+      String(body.deviceId ?? ''),
+      body.platform,
+      body.trackKey,
+    );
+
+    const cookie = await loadStoredCookie(target.ownerUserId, target.platform);
+    if (!cookie) {
+      throw badRequest(
+        'TA 的凭据没有保存在服务器上，无法共享会员（请在设置里改为「保存在服务器」）',
+        'credential_not_on_server',
+      );
+    }
+
+    const quality = String(body.quality ?? 'high').slice(0, 16);
+    const resolved = await probeStream(target.platform, target.trackId, quality, cookie);
+    return {
+      platform: target.platform,
+      trackKey: target.trackKey,
+      ownerUserId: target.ownerUserId,
+      url: resolved.url,
+      headers: resolved.headers,
+      quality: resolved.quality,
+      trial: resolved.trial,
+    };
+  });
 
   /**
    * 我的一起听总览（账户中心用）：累计时长、一起听过的伙伴、次数。

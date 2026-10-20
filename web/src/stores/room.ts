@@ -1,19 +1,23 @@
-import { defineStore } from 'pinia';
+﻿import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import { ApiError } from '@/api/client';
 import {
   roomApi,
+  type EntitlementPlatform,
   type RoomAction,
   type RoomActionPayload,
   type RoomKind,
   type RoomLostReason,
   type RoomMember,
+  type RoomEntitlement,
+  type RoomEntitlementPending,
+  type RoomSource,
   type RoomMode,
   type RoomPlayback,
   type RoomTrack,
   type RoomView,
 } from '@/api/room';
-import type { UnifiedTrack } from '@/api/types';
+import type { Quality, UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
 import { livePosition, SYNC_SEEK_S, SYNC_TRIM_S, TRIM_RATE } from '@/utils/sync';
 import { useAuthStore } from './auth';
@@ -46,6 +50,14 @@ const ROOM_CODE_KEY = 'sakura.room.code';
  * `join`——`join` 在服务端的语义是「把席位接过来」，那会把播放从真正在放的那台抢走。
  */
 const ROOM_SEAT_KEY = 'sakura.room.seat';
+
+/**
+ * 把席位交给另一台设备时等多久算「没接过去」。
+ *
+ * 目标设备收到指令后要发一次 join，局域网下通常一两百毫秒；留到 6 秒是为了容忍
+ * 移动网络和浏览器后台被唤醒的延迟，又不至于让人一直盯着没反应的界面。
+ */
+const SEAT_HANDOFF_MS = 6_000;
 
 interface StoredRoom {
   code: string;
@@ -115,6 +127,17 @@ export const useRoomStore = defineStore('room', () => {
   const togetherSessionSeconds = ref(0);
   /** 此刻是否正在走表（两人都在房间里）。 */
   const togetherCounting = ref(false);
+  /**
+   * 会员共享状态（按平台）。
+   *
+   * `active[platform]` 是提供权益的成员 userId，`null` = 各用各的（默认）。
+   * 它只是**授权关系**：真正取流时，由提供方把解析好的 CDN 直链分发过来，
+   * 服务端既不存凭据也不存地址。
+   */
+  const entitlement = ref<RoomEntitlement>({
+    active: { netease: null, qq: null },
+    pending: { netease: null, qq: null },
+  });
 
   /** 是否在房间里。 */
   const active = computed(() => code.value !== null);
@@ -184,6 +207,41 @@ export const useRoomStore = defineStore('room', () => {
   /** 本机能否解散房间：双人房人人可解散；多人房只有房主。 */
   const canDissolve = computed(() => isDuo.value || isOwner.value);
   const currentTrack = computed<RoomTrack | null>(() => playback.value?.track ?? null);
+
+  /**
+   * 我正在为房间提供哪些平台的权益。
+   *
+   * 只在**我占着席位**时才有意义：真正要解析地址的是这台设备，旁观设备给不了别人流。
+   */
+  const mySharedPlatforms = computed<EntitlementPlatform[]>(() => {
+    const userId = useAuthStore().user?.id;
+    if (!userId) return [];
+    const out: EntitlementPlatform[] = [];
+    for (const platform of ['netease', 'qq'] as EntitlementPlatform[]) {
+      if (entitlement.value.active[platform] === userId) out.push(platform);
+    }
+    return out;
+  });
+
+  /** 需要**我**点头的共享请求（对方要用我的会员）。双人房里最多一条。 */
+  const entitlementRequestsForMe = computed<RoomEntitlementPending[]>(() => {
+    const userId = useAuthStore().user?.id;
+    if (!userId) return [];
+    const out: RoomEntitlementPending[] = [];
+    for (const item of Object.values(entitlement.value.pending)) {
+      if (item && item.targetUserId === userId) out.push(item);
+    }
+    return out;
+  });
+
+  /**
+   * 某个平台当前用谁的权益解析流；`null` = 各用各的，也就是「正常路径」。
+   *
+   * 注意它只回答「该不该走共享」，不保证对方一定给了地址——地址仍要现取。
+   */
+  function entitlementOwner(platform: EntitlementPlatform): string | null {
+    return entitlement.value.active[platform] ?? null;
+  }
 
   /** 本机时钟与服务端时钟的差（毫秒），靠事件里带的 `serverNow` 刷新。 */
   let clockOffsetMs = 0;
@@ -327,6 +385,25 @@ export const useRoomStore = defineStore('room', () => {
     void act('setMode', { mode });
   }
 
+  /**
+   * 改某平台的会员共享归属。
+   *
+   * - `targetUserId = null`：回到「各用各的」（撤销不需要对方同意）
+   * - 传自己：直接分享
+   * - 传对方：只是**发起请求**，要等对方 `ackEntitlement` 之后才生效
+   *
+   * 不做本地乐观更新：生效一律以服务端回推的 `room-entitlement` 为准，否则
+   * 「等待对方确认」会被界面先显示成已生效，用户以为共享开了、其实没开。
+   */
+  function setEntitlement(platform: EntitlementPlatform, targetUserId: string | null): void {
+    void act('setEntitlement', { platform, targetUserId });
+  }
+
+  /** 权益提供方确认（`accept: true`）或拒绝一次共享请求。 */
+  function ackEntitlement(platform: EntitlementPlatform, accept: boolean): void {
+    void act('ackEntitlement', { platform, accept });
+  }
+
   // ---- 把本地播放器镜像到房间状态 ----
 
   /**
@@ -379,6 +456,9 @@ export const useRoomStore = defineStore('room', () => {
       syncing = true;
       const gen = epoch;
       try {
+        // 借别人会员时先向服务端要地址：要不到就用自己解析，不能因此把整首跳过。
+        await fetchSharedSource(track);
+        if (gen !== epoch) return;
         await player.playTrack(roomTrackToUnified(track));
         // 换歌途中房间结束了（或换成了别的房间）：这段迟到的收尾不能再动播放器。
         if (gen !== epoch) return;
@@ -592,6 +672,90 @@ export const useRoomStore = defineStore('room', () => {
     startTick();
   }
 
+  // ---- 会员共享：向服务端要一条「别人的会员」地址 ----
+
+  /**
+   * 拿到手的共享直链，键为 `${platform}:${trackKey}`。
+   *
+   * 只放内存、不持久化：地址有寿命（实测网易云 25 分钟），存下来的多半已经失效。
+   * 上限 20 条——够覆盖一次房间里的来回切歌，又不会无限长。
+   */
+  const sharedSources = new Map<string, RoomSource>();
+  /** 已经就「拿不到共享地址」提示过：同一段时间内不要每次切歌都弹一遍。 */
+  let sharedMissingNotified = false;
+
+  /** 当前曲目属于哪个平台（取流坐标里第一个认识的）。 */
+  function platformOf(track: RoomTrack): EntitlementPlatform | null {
+    for (const source of track.sources) {
+      if (source.platform === 'netease' || source.platform === 'qq') return source.platform;
+    }
+    return null;
+  }
+
+  /** 这一平台当前是不是在借**别人**的权益；是的话返回对方的 userId。 */
+  function borrowsFrom(platform: EntitlementPlatform): string | null {
+    const ownerId = entitlement.value.active[platform] ?? null;
+    if (!ownerId) return null;
+    return ownerId === useAuthStore().user?.id ? null : ownerId;
+  }
+
+  /**
+   * 授权变化后，清掉不再有效的共享地址。
+   *
+   * 撤销共享、或提供方退出房间之后，缓存里那条直链就不该再用了：
+   * 既是授权范围外的取流，也多半已经过期（地址寿命只有二三十分钟）。
+   */
+  function pruneSharedSources(): void {
+    for (const [key, item] of sharedSources) {
+      if (entitlement.value.active[item.platform] !== item.ownerUserId) sharedSources.delete(key);
+    }
+  }
+
+  /**
+   * 换歌前拿一条「对方会员」的播放地址。
+   *
+   * 解析在**服务端**完成：它用权益提供方存在服务器上的凭据换出 CDN 直链，受方只拿到地址，
+   * 全程不接触凭据。对方用「仅本机」凭据时服务端拿不到，会明确报错——那种情况下共享不可用，
+   * 这是物理限制，不是保守。
+   *
+   * 拿不到就返回 `null`，由调用方走自己的正常解析：宁可降级，也不能因此把整首跳过。
+   */
+  async function fetchSharedSource(track: RoomTrack): Promise<RoomSource | null> {
+    const platform = platformOf(track);
+    if (!platform || !borrowsFrom(platform)) return null;
+
+    const key = `${platform}:${track.key}`;
+    const cached = sharedSources.get(key);
+    if (cached) return cached;
+
+    try {
+      const data = await roomApi.fetchSource({
+        deviceId: useConnectStore().deviceId,
+        platform,
+        trackKey: track.key,
+        quality: usePlayerStore().quality,
+      });
+      sharedSources.set(key, data);
+      if (sharedSources.size > 20) {
+        const oldest = sharedSources.keys().next().value;
+        if (oldest) sharedSources.delete(oldest);
+      }
+      sharedMissingNotified = false;
+      return data;
+    } catch (error) {
+      /*
+       * 最常见的是对方用了「仅本机」凭据，其次是授权刚被撤销。
+       * 说一次就够——否则用户看到的现象和「共享根本没生效」完全一样，无从判断。
+       */
+      if (!sharedMissingNotified) {
+        sharedMissingNotified = true;
+        const fallback = `${partner.value?.nickname ?? '对方'} 的会员暂时不可用，先用自己的账号播放`;
+        const reason = error instanceof Error && error.message ? error.message : fallback;
+        toast.info(reason, 6000);
+      }
+      return null;
+    }
+  }
   // ---- 事件处理 ----
 
   function applyRoom(
@@ -660,6 +824,16 @@ export const useRoomStore = defineStore('room', () => {
     togetherSeconds.value = Math.max(0, Math.floor(room.togetherSeconds));
     togetherSessionSeconds.value = Math.max(0, Math.floor(room.togetherSessionSeconds));
     togetherCounting.value = room.togetherCounting === true;
+    /*
+     * 会员共享状态。老服务端没有这个字段：缺省成「各用各的」，
+     * 让客户端在网关没升级时也能正常显示面板（而不是崩在一个 undefined 上）。
+     */
+    entitlement.value = room.entitlement ?? {
+      active: { netease: null, qq: null },
+      pending: { netease: null, qq: null },
+    };
+    // 快照里的授权可能已经变了（提供方退出房间就是这么传过来的）：作废对应缓存。
+    pruneSharedSources();
     togetherSyncedAt = typeof payload?.serverNow === 'number' ? payload.serverNow : Date.now();
     // 身份以服务端逐台算好的 `me` 为准：席位在本机就镜像播放，不在就只显示。
     spectating.value = mySeat === null;
@@ -707,6 +881,10 @@ export const useRoomStore = defineStore('room', () => {
     const key = payload.track?.key ?? null;
     if (failedKey && failedKey !== key) failedKey = null;
 
+    /*
+     * 切歌上报**不在这里**：等播放器解析完再报（见 init 里的 `setSourceResolvedHook`）。
+     * 那样同一次解析既能自己播、又能递给对方，不必为了上报再请求一次网关。
+     */
     void syncToRoom();
   }
 
@@ -735,6 +913,26 @@ export const useRoomStore = defineStore('room', () => {
       connect.onRoomEvent('room-playback', (payload) =>
         applyPlayback(payload as (RoomPlayback & { serverNow?: number }) | null),
       ),
+      /*
+       * 会员共享状态变化（发起 / 确认 / 拒绝 / 撤销）。
+       *
+       * 走独立事件而不是等下一帧 `room`：改一次共享不该把整个队列再传一遍。
+       * 成员离开导致共享失效时没有这条事件，但那时服务端会推全量快照，`room.entitlement`
+       * 里已经是新值（见 applyRoom）。
+       */
+      connect.onRoomEvent('room-entitlement', (payload) => {
+        const data = payload as (RoomEntitlement & { serverNow?: number }) | null;
+        if (!data) return;
+        if (typeof data.serverNow === 'number') clockOffsetMs = data.serverNow - Date.now();
+        // 已经离开房间了：这一帧是离开前发出的，丢掉即可。
+        if (code.value === null) return;
+        entitlement.value = {
+          active: data.active ?? { netease: null, qq: null },
+          pending: data.pending ?? { netease: null, qq: null },
+        };
+        // 撤销/换人之后，旧的直链立即作废，别让它被下一次重播捡起来用。
+        pruneSharedSources();
+      }),
     ];
     unsubscribeEvents = () => {
       for (const off of offs) off();
@@ -742,6 +940,23 @@ export const useRoomStore = defineStore('room', () => {
 
     // 「一曲播完」交给房间：本机不再自行 next，而是上报 ended 由服务端统一切歌。
     const player = usePlayerStore();
+    /*
+     * 把「共享地址去哪儿找」告诉播放器：它每次起播时问一句，拿不到就自己解析。
+     * 用回调而不是把地址塞进播放器状态，是因为地址的生命周期归房间管——
+     * 它知道什么时候失效、什么时候该重新要一条。
+     */
+    player.setSharedSourceProvider((platform, trackKey) => {
+      const item = sharedSources.get(`${platform}:${trackKey}`);
+      if (!item) return null;
+      // 自己提供的地址不必再从房间绕一圈回来。
+      if (item.ownerUserId === useAuthStore().user?.id) return null;
+      return {
+        url: item.url,
+        headers: item.headers,
+        trial: item.trial,
+        quality: item.quality as Quality | undefined,
+      };
+    });
     player.setEndHandler(() => {
       if (!active.value) return false;
       const track = playback.value?.track;
@@ -786,6 +1001,14 @@ export const useRoomStore = defineStore('room', () => {
     joining = false;
     pendingCode = null;
     clockOffsetMs = 0;
+    // 共享地址与「已上报」标记都跟着房间走：下一个房间不该复用上一个的直链。
+    sharedSources.clear();
+    sharedMissingNotified = false;
+    player.setSharedSourceProvider(null);
+    entitlement.value = {
+      active: { netease: null, qq: null },
+      pending: { netease: null, qq: null },
+    };
   }
 
   /**
@@ -886,6 +1109,24 @@ export const useRoomStore = defineStore('room', () => {
     const roomCode = code.value;
     if (!roomCode) return;
     await reclaim(roomCode);
+  }
+
+  /**
+   * 请另一台设备接走一起听的席位，并等它**真的接上**。
+   *
+   * 指令只保证「送到」；真正接席位是那台设备自己去 `join`。所以这里盯的是房间状态：
+   * 我账号的席位换到它身上才算成功。设备离线、连接半死都会在超时后落到 false，
+   * 界面据此说「没接过去」，而不是发完就报成功。
+   */
+  async function handSeatTo(target: string): Promise<boolean> {
+    const connect = useConnectStore();
+    if (!(await connect.send(target, 'takeSeat'))) return false;
+    const deadline = Date.now() + SEAT_HANDOFF_MS;
+    while (Date.now() < deadline) {
+      if (accountMember.value?.deviceId === target) return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+    return false;
   }
 
   /**
@@ -1030,6 +1271,14 @@ export const useRoomStore = defineStore('room', () => {
     canManageMembers,
     canDissolve,
     currentTrack,
+    /** 会员共享状态（按平台）：`active` 是谁的权益，`pending` 是待确认请求。 */
+    entitlement,
+    /** 我正在提供权益的平台（只在本机占着席位时有意义）。 */
+    mySharedPlatforms,
+    /** 需要我点头的共享请求（对方要用我的会员）。 */
+    entitlementRequestsForMe,
+    /** 某平台当前用谁的权益；`null` = 各用各的。 */
+    entitlementOwner,
     /** 两人历史累计一起听时长（秒），已把「正在走的那一段」算进来。 */
     togetherLive,
     /** 本次房间的一起听时长（秒），已把「正在走的那一段」算进来。 */
@@ -1044,6 +1293,8 @@ export const useRoomStore = defineStore('room', () => {
     dissolve,
     /** 把播放从同账号的另一台设备转移过来（旁观时唯一的那个动作）。 */
     transfer,
+    /** 请另一台设备接走席位，并等它真的接上（超时返回 false）。 */
+    handSeatTo,
     toggle,
     play,
     pause,
@@ -1057,6 +1308,10 @@ export const useRoomStore = defineStore('room', () => {
     removeAt,
     setQueue,
     setMode,
+    /** 改某平台的会员共享归属（`null` = 各用各的）。 */
+    setEntitlement,
+    /** 权益提供方确认/拒绝一次共享请求。 */
+    ackEntitlement,
     /** 房间进度推算（已校正时钟差），界面显示房间进度用它。 */
     positionOf: (state: RoomPlayback | null) => livePosition(state, clockOffsetMs),
   };

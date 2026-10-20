@@ -40,7 +40,22 @@ const toast = useToast();
  * 遥控**别的设备**（播放/音量/进度）不受影响，那些不碰本机。
  */
 // 用席位的口径：只是旁观时本机没在放一起听，投送到别的设备完全没问题。
-const roomActive = computed(() => room.seatActive);
+/**
+ * 房间进行中——**本机是席位或旁观都算**。
+ *
+ * 房间里这块面板只剩一件事：决定声音从哪台设备出。内容控制归房间，
+ * 所以传输、跟随、投放全部让位给「让声音切到这台」。
+ */
+const roomActive = computed(() => room.active);
+/** 房间席位所在的那台设备（我账号的）。它放的是房间的歌，对内容控制只读。 */
+const roomSeatId = computed(() => room.accountMember?.deviceId ?? null);
+
+function isRoomSeat(device: ConnectDevice): boolean {
+  return roomActive.value && device.deviceId === roomSeatId.value;
+}
+
+/** 「让声音切到这台」在途：指令已发出、等对方接上，期间不让连点。 */
+const seating = ref(false);
 
 const open = ref(false);
 const wrapRef = ref<HTMLElement | null>(null);
@@ -208,8 +223,8 @@ async function togglePlay(device: ConnectDevice): Promise<void> {
   await connect.control(device.deviceId, device.state?.playing ? 'pause' : 'play');
 }
 
-function skip(device: ConnectDevice, action: 'prev' | 'next'): Promise<void> {
-  return connect.control(device.deviceId, action);
+async function skip(device: ConnectDevice, action: 'prev' | 'next'): Promise<void> {
+  await connect.control(device.deviceId, action);
 }
 
 /**
@@ -220,21 +235,58 @@ function skip(device: ConnectDevice, action: 'prev' | 'next'): Promise<void> {
  */
 async function activate(device: ConnectDevice): Promise<void> {
   if (player.queue.length > 0) {
-    await connect.control(device.deviceId, 'transfer', {
-      queue: player.queue,
-      index: player.index,
-      position: player.currentTime,
-    });
+    /*
+     * 先停下再等确认：交给对方时本机继续出声就是两个声音叠在一起。
+     * 但没交出去必须回滚——停在那里会让人以为「已经投过去了」，实际一片安静。
+     */
+    const wasPlaying = player.playing;
     player.pause();
+    const result = await connect.control(
+      device.deviceId,
+      'transfer',
+      { queue: player.queue, index: player.index, position: player.currentTime },
+      true,
+    );
+    if (result !== 'ok') {
+      if (wasPlaying) player.play();
+      toast.info(`「${device.name}」没有接过去，已恢复本机播放`);
+      return;
+    }
     toast.success(`已交给「${device.name}」播放`);
   } else if (device.state?.track) {
-    await connect.takeOver(device);
+    // 接管是往返：队列真的回传了才算成功（提示由 takeOver 自己给）。
+    if (!(await connect.takeOver(device))) return;
     toast.success(`已从「${device.name}」接过来`);
   } else {
     toast.info('两边都没有可播放的内容');
     return;
   }
   open.value = false;
+}
+
+/**
+ * 一起听：「让声音切到这台」。
+ *
+ * 只是**请**它接席位——真正的动作是它自己 `join`。所以等的是房间状态：
+ * 席位真的换到它身上才算成功（见 `room.handSeatTo`）。
+ */
+async function takeSeatThere(device: ConnectDevice): Promise<void> {
+  if (seating.value) return;
+  seating.value = true;
+  try {
+    /*
+     * 等它真的接上再报成功：这条指令只保证「送到」，接席位是那台设备自己去 join。
+     * 没接过去就如实说没反应，否则用户会盯着一个还在放自己歌的设备以为切过去了。
+     */
+    if (await room.handSeatTo(device.deviceId)) {
+      toast.success(`声音已切到「${device.name}」`);
+      open.value = false;
+    } else {
+      toast.info(`「${device.name}」没有接过去，可能已离线或没响应`);
+    }
+  } finally {
+    seating.value = false;
+  }
 }
 
 /**
@@ -417,9 +469,14 @@ function requestFollowHint(device: ConnectDevice): string {
 }
 
 /** 反向：请对方跟随本机。它跟不跟由它自己决定，本机只是发请求。 */
-function toggleRequestFollow(device: ConnectDevice): void {
-  if (device.state?.following === connect.deviceId) void connect.cancelFollow(device);
-  else void connect.requestFollow(device);
+async function toggleRequestFollow(device: ConnectDevice): Promise<void> {
+  if (device.state?.following === connect.deviceId) {
+    await connect.cancelFollow(device);
+    return;
+  }
+  // 「请它跟随」也要等它真的动起来（它会补报状态），不然只是我们一厢情愿。
+  const result = await connect.requestFollow(device);
+  if (result === 'ok') toast.success(`已请「${device.name}」跟随本机`);
 }
 
 /**
@@ -638,10 +695,10 @@ function commitRename(): void {
         <button class="btn device-following-stop" type="button" @click="connect.stopFollowing()">停止</button>
       </div>
 
-      <!-- 一起听进行中：本机是房间的镜像输出，接管本机的设备操作全部停用。 -->
+      <!-- 一起听进行中：内容控制归房间，这里只剩「决定声音从哪台出」。 -->
       <div v-if="roomActive" class="device-following">
         <AppIcon name="users" :size="13" />
-        <span class="truncate">一起听进行中，设备跟随已暂停</span>
+        <span class="truncate">一起听进行中：播放由房间统一管，可以把声音切到另一台</span>
       </div>
 
       <div class="device-list">
@@ -662,6 +719,7 @@ function commitRename(): void {
             </span>
             <span class="truncate device-card-name">{{ device.name }}</span>
             <span v-if="isSelf(device)" class="tag">这台设备</span>
+            <span v-else-if="isRoomSeat(device)" class="tag">一起听中</span>
             <span v-else-if="device.state?.following === connect.deviceId" class="tag">跟随我中</span>
 
             <button
@@ -678,7 +736,8 @@ function commitRename(): void {
               图标说明「点它会做什么」，文字说明「它现在怎么样」。
               左右贴着上一首/下一首：三个键一起用，分开放反而要多找一次。
             -->
-            <span v-else class="row device-transport-group" style="gap: 2px">
+            <!-- 一起听席位上的设备：传输控制一个都不给，它放的是房间的歌。 -->
+            <span v-else-if="!isRoomSeat(device)" class="row device-transport-group" style="gap: 2px">
               <button
                 class="icon-btn device-skip"
                 type="button"
@@ -716,7 +775,10 @@ function commitRename(): void {
           </p>
 
           <!-- 进度：要有内容才谈得上拖 -->
-          <div v-if="!isSelf(device) && device.state?.track" class="device-control">
+          <div
+            v-if="!isSelf(device) && !isRoomSeat(device) && device.state?.track"
+            class="device-control"
+          >
             <span class="device-control-time">{{ positionText(device) }}</span>
             <input
               class="device-slider"
@@ -755,8 +817,12 @@ function commitRename(): void {
               @change="onSliderCommit(device, 'volume', $event)"
             />
 
-            <!-- 行尾两个图标：左边的就是「它现在用的模式」，右边是它的播放列表。 -->
+            <!--
+              行尾两个图标：左边的就是「它现在用的模式」，右边是它的播放列表。
+              一起听席位上的设备不给：模式和队列都属于房间，这里改了也留不住。
+            -->
             <button
+              v-if="!isRoomSeat(device)"
               class="icon-btn device-mini-btn"
               :class="{
                 'is-active': float?.kind === 'mode' && float.deviceId === device.deviceId,
@@ -769,6 +835,7 @@ function commitRename(): void {
               <AppIcon :name="modeIconOf(device)" :size="15" />
             </button>
             <button
+              v-if="!isRoomSeat(device)"
               class="icon-btn device-mini-btn"
               :class="{
                 'is-active': float?.kind === 'queue' && float.deviceId === device.deviceId,
@@ -786,39 +853,57 @@ function commitRename(): void {
             </button>
           </div>
 
-          <!-- 远程操作：只对别的设备。空着的设备恰恰最需要这几个入口，所以不再要求它有内容。 -->
-          <div v-if="!isSelf(device)" class="device-card-actions">
+          <!--
+            远程操作：只对别的设备。空着的设备恰恰最需要这几个入口，所以不再要求它有内容。
+
+            一起听期间这一块只剩「让声音切到这台」：内容控制归房间，跟随 / 投放改的都是
+            「谁在放」，房间里用它们只会得到一份副本播放，然后被房间的镜像拉回去。
+            席位设备整块都不给——它已经在放了。
+          -->
+          <div
+            v-if="!isSelf(device) && (!roomActive || !isRoomSeat(device))"
+            class="device-card-actions"
+          >
             <button
-              v-if="canFollowTarget(device)"
+              v-if="roomActive"
               class="btn device-btn"
               type="button"
-              :disabled="roomActive"
-              :class="{ 'is-active': connect.following === device.deviceId }"
-              :title="roomActive ? '一起听进行中，暂不能跟随设备' : followHint(device)"
-              @click="toggleFollow(device)"
+              :disabled="seating"
+              :title="`把一起听的播放转到「${device.name}」，本机改为只看`"
+              @click="takeSeatThere(device)"
             >
-              {{ connect.following === device.deviceId ? '停止跟随' : '跟随它' }}
+              {{ seating ? '正在切换…' : '让声音切到这台' }}
             </button>
-            <button
-              class="btn device-btn"
-              type="button"
-              :disabled="roomActive"
-              :class="{ 'is-active': device.state?.following === connect.deviceId }"
-              :title="roomActive ? '一起听进行中，暂不能跟随设备' : requestFollowHint(device)"
-              @click="toggleRequestFollow(device)"
-            >
-              跟随我
-            </button>
-            <button
-              v-if="canCast(device)"
-              class="btn device-btn"
-              type="button"
-              :disabled="roomActive"
-              :title="roomActive ? '一起听进行中，暂不能接管播放' : castHint(device)"
-              @click="activate(device)"
-            >
-              播到这台
-            </button>
+            <template v-else>
+              <button
+                v-if="canFollowTarget(device)"
+                class="btn device-btn"
+                type="button"
+                :class="{ 'is-active': connect.following === device.deviceId }"
+                :title="followHint(device)"
+                @click="toggleFollow(device)"
+              >
+                {{ connect.following === device.deviceId ? '停止跟随' : '跟随它' }}
+              </button>
+              <button
+                class="btn device-btn"
+                type="button"
+                :class="{ 'is-active': device.state?.following === connect.deviceId }"
+                :title="requestFollowHint(device)"
+                @click="toggleRequestFollow(device)"
+              >
+                跟随我
+              </button>
+              <button
+                v-if="canCast(device)"
+                class="btn device-btn"
+                type="button"
+                :title="castHint(device)"
+                @click="activate(device)"
+              >
+                播到这台
+              </button>
+            </template>
           </div>
 
         </section>

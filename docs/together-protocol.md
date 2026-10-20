@@ -14,6 +14,28 @@
 
 ## 最近更新
 
+> **2026-10-20** —— **会员共享（按平台分开）**：
+>
+> - 新增 action `setEntitlement { platform, targetUserId | null }` 与 `ackEntitlement { platform, accept }`；
+>   新增事件 `room-entitlement`；`RoomView` 新增 `entitlement` 字段 → 见 5.4
+> - 语义是「某个平台的取流用谁的权益」，`netease` / `qq` 各一份，**默认各用各的**
+> - **只存授权关系，不存凭据也不存播放地址**：服务端永远不持有、也不转发别人的 cookie
+> - 选中对方只是**发起请求**，必须对方本人确认才生效；撤销共享不需要对方同意
+> - 仅 `duo` 开放（`400 entitlement_duo_only`）
+> - 新增 `POST /api/rooms/source`：受方请求，**服务端用提供方的服务器凭据代解析**后直接返回地址 → 见 5.5
+> - 共享的是**CDN 直链**，不是凭据：地址由服务端现解析，别人的 cookie 不出网关
+> - 提供方用「仅本机」凭据时**无法共享**（服务端拿不到 cookie），返回 `credential_not_on_server`
+
+> **2026-10-20** —— **设备面板在房间里只剩「输出选择器」**：
+>
+> - 房间里可用的设备级操作收成三样：看状态、调音量、**让声音切到这台** → 见 7.8
+> - 「让声音切到这台」走多设备指令 `takeSeat`（`connect-protocol.md` 7.1）：面板只发一条通知，
+>   目标设备自己 `join` 接席位。所以名字、个人现场、旧设备降级都由那台设备如实处理，
+>   服务端不需要「替某台设备接席位」的接口
+> - **席位设备对遥控只读**：`volume`（设备属性）与 `unfollow`（幂等）例外，其余内容类指令一律忽略
+> - 投放 / 接管 / 跟随在房间里**不出现**：它们改的是「谁在放」，而房间里这件事只有 `join` 一条路
+> - 发起方要等**房间状态**确认（席位真的换了设备）再报成功，超时就说没接过去
+
 > **2026-10-15** —— **播放模式（顺序 / 列表循环 / 单曲循环 / 随机）纳入房间同步**：
 >
 > - 新增 action `setMode { mode }`；`RoomPlaybackView` 新增 `mode` 字段；`create` 可带初始
@@ -98,6 +120,7 @@
 |---|---|---|
 | `room` | 加入 / 退出 / 席位转移 / 解散 / 队列变化（加歌、删歌、换歌单） | `{ room: RoomView \| null, serverNow, reason?, deviceName? }` |
 | `room-playback` | 播放 / 暂停 / 切歌 / 拖动进度 / 自然播完 / 跳过 | `RoomPlaybackView & { serverNow }` |
+| `room-entitlement` | 会员共享状态变化：发起请求 / 确认 / 拒绝 / 撤销 | `RoomEntitlementView & { serverNow }` |
 
 `room: null` 表示**这个房间不再作用于本机**，但两种原因该怎么处理完全不同，看 `reason` 分：
 
@@ -134,7 +157,11 @@
   "version": 3,
   "togetherSeconds": 4980,
   "togetherSessionSeconds": 300,
-  "togetherCounting": true
+  "togetherCounting": true,
+  "entitlement": {
+    "active": { "netease": null, "qq": null },
+    "pending": { "netease": null, "qq": null }
+  }
 }
 ```
 
@@ -151,6 +178,7 @@
 - `members[].role`：`duo` 房恒为 `member`；`group` 房里创建者是 `owner`。
 - `version` 是队列版本号，队列一变就递增；客户端可用它做去重。
 - `togetherSeconds` / `togetherSessionSeconds` / `togetherCounting`：一起听时长，见 7.5。
+- `entitlement`：会员共享的授权状态，按平台分开，见 5.4。快照里带上，客户端冷启动/重连不必再拉一次。
 
 ### RoomPlaybackView
 
@@ -318,6 +346,8 @@ GET /api/rooms/:code
 | `setMode` | `{ mode }` | 改播放模式（`order` / `all` / `one` / `shuffle`，**两端共享**，见 5.3） |
 | `ended` | `{ trackKey }` | 自然播完上报（见 5.1） |
 | `unplayable` | `{ trackKey }` | 本机播不了这首，请全员跳过（见 5.2） |
+| `setEntitlement` | `{ platform, targetUserId \| null }` | 会员共享：改某平台的权益归属（见 5.4） |
+| `ackEntitlement` | `{ platform, accept }` | 权益提供方确认/拒绝一次共享请求（见 5.4） |
 
 不在表里的 action 一律 `400 unknown_action`；非房间成员一律 `403 not_a_member`（未入房是 `404 room_not_found`）。
 
@@ -376,6 +406,163 @@ POST /api/rooms/action
 - 入房后客户端要**把本机选择器对齐到房间的 `mode`**，不要沿用自己进房前的模式。
 - 改模式**不动当前曲目与进度**，换的只是「播完之后怎么走」。
 - 退出房间时恢复自己原来的模式（与恢复个人播放现场同一套收尾，见 6.4）。
+
+### 5.4 会员共享（`setEntitlement` / `ackEntitlement`）
+
+没会员的一方在房间里遇到 VIP 曲目只能听到试听片段。会员共享让**其中一方把自己的平台权益
+借给整个房间**，按平台分开设置：
+
+```
+网易云音乐   [ 各自 ] [ 用我的 ] [ 用 TA 的 ]
+QQ 音乐      [ 各自 ] [ 用我的 ] [ 用 TA 的 ]
+```
+
+**按平台分开是天然的**：一首歌只属于一个平台，取流时按 `track.platform` 读对应那一项即可，
+不需要额外做隔离。
+
+#### 状态形状
+
+```json
+{ "active": { "netease": "12", "qq": null },
+  "pending": { "netease": null, "qq": { "platform": "qq", "targetUserId": "12",
+                                        "requestedBy": "34", "at": 1758600000000 } } }
+```
+
+- `active[platform]` = 提供权益的成员 `userId`；`null` = **各用各的（默认）**
+- `pending[platform]` = 等待提供方确认的请求
+
+#### 三种操作
+
+| payload | 语义 |
+|---|---|
+| `{ "platform": "netease", "targetUserId": null }` | 回到「各用各的」。**任何成员都能做**，撤销不需要对方同意 |
+| `{ "platform": "netease", "targetUserId": "<自己>" }` | 自己分享自己的会员，直接生效 |
+| `{ "platform": "netease", "targetUserId": "<对方>" }` | **只是发起请求**，写入 `pending`，等对方确认 |
+
+确认走独立 action：
+
+```
+{ "action": "ackEntitlement", "payload": { "platform": "netease", "accept": true } }
+```
+
+#### 为什么必须由提供方确认
+
+被选中的一方等于把自己的**平台账号**借给房间里另一个人取流。这会带来三件他必须知情的事：
+可能违反平台用户协议、产生他账号下的播放记录、占用他的并发设备数。所以：
+
+- 只有 `pending.targetUserId` 本人（其账号下任何一台设备）能 `ackEntitlement`，否则 `403 entitlement_not_target`
+- 拒绝也要清掉 `pending`，否则发起方会永远停在「等待确认」
+- **默认必须是「各自」**，客户端不得替用户预选
+
+#### 凭据与播放地址
+
+**服务端只存授权关系，不存凭据、也不存播放地址。** 取流时由服务端临时取用
+`active[platform]` 那位**存在服务器上**的凭据解析一次，把地址给受方（见 5.5）。
+
+所以别人的 cookie 永远不出网关，受方也拿不到任何凭据。
+
+#### 失效规则
+
+| 事件 | 结果 |
+|---|---|
+| 提供方退出房间 / 席位消失 | 该平台立即回落 `active = null`，同时清掉与他相关的 `pending` |
+| 提供方拒绝 | 清 `pending`，`active` 保持不变 |
+| 房间解散 | 整个房间态一起消失，无需单独清理 |
+
+**回落不能中断播放**：受方察觉到共享失效时，用自己的凭据重新解析；再失败就降级音质，
+不要弹错误、也不要打断正在放的那一首。但**要提示一次**（同一房间只提示一次）——
+对方离线或关掉共享时，用户看到的现象和「共享根本没生效」一模一样，不说明就无从判断。
+
+#### 风险告知
+
+客户端在提供方第一次确认前，必须把风险说清楚（每房间每平台一次），至少包含：
+
+1. 你的账号将为房间内另一位用户提供播放权限，对方播放时使用你的会员权益
+2. **这可能违反网易云 / QQ 音乐的用户协议，存在账号被限制、会员被取消或封禁的风险**
+3. 对方播放会产生你账号下的播放记录，并占用你账号的并发设备数
+4. 你退出房间、关闭共享或会员到期后，对方会立刻失去该权益
+5. 你可以随时切回「各自使用」
+
+第 2 条必须原样出现，不能软化成「可能存在风险」。
+
+#### 实测数据（用于设计刷新策略）
+
+| 平台 | 直链校验 Referer | 同 vkey 并发 | 跨 IP 拉流 | 有效期 |
+|---|---|---|---|---|
+| 网易云 | 否 | 12 连接通过 | 通过 | **25 分钟，过期时刻写在 URL 路径首段** |
+| QQ 音乐 | 否 | 12 连接通过 | 通过 | > 29 分钟（`vkey` 无明示过期时间，按 20 分钟保守记） |
+
+结论：单曲时长（3~5 分钟）远小于直链寿命，**不需要播放中途热刷新**。但要注意：
+
+- 受方**中途加入 / 断线重连**时必须让提供方**重新解析**，不能复用房间当前那条旧地址
+- 播放器报错（403 / seek 失败）时走「重新要一条 + 按当前进度恢复」，这条兜底比预测过期更重要
+
+### 5.5 借会员取流（`/api/rooms/source`）
+
+共享生效后，受方的取流不再走自己的账号，而是**由服务端拿权益提供方的凭据解析**：
+
+1. 受方切歌（或重连、播放失败）→ `POST /api/rooms/source`
+2. 服务端校验房间、授权、曲目
+3. 服务端取出**提供方存在服务器上**的凭据，调上游换出 CDN 直链
+4. 直接把地址返回给受方
+5. 受方用这条直链拉流（不经网关代理，省掉一份带宽）
+
+没有客户端之间的地址传递，也没有事件中继——一次请求拿一次结果。
+
+#### 硬性前提：凭据必须在服务器上
+
+这是本方案唯一的门槛，也最容易踩：
+
+| 提供方的凭据模式 | 结果 |
+|---|---|
+| 保存在服务器（AES-GCM 入库） | 可用 |
+| 仅本机（浏览器 IndexedDB） | **不可用**，返回 `400 credential_not_on_server` |
+
+「仅本机」模式下网关手里根本没有那份 cookie，物理上就解析不出地址。客户端应当把这条
+错误原样展示，并提示「让对方在设置里改为『保存在服务器』」。
+
+#### 接口
+
+```
+POST /api/rooms/source
+{ "deviceId": "34.ab", "platform": "netease", "trackKey": "netease:186016", "quality": "lossless" }
+
+→ {
+    "platform": "netease",
+    "trackKey": "netease:186016",
+    "ownerUserId": "12",
+    "url": "https://m801.music.126.net/…/xxx.mp3?vuutv=…",
+    "headers": { "Referer": "https://music.163.com/", "Origin": "https://music.163.com", "User-Agent": "…" },
+    "quality": "lossless",
+    "trial": false
+  }
+```
+
+#### 服务端校验（缺一条都会变成公开的代解析服务）
+
+| 校验 | 不通过时 |
+|---|---|
+| 我是房间成员（且是这台设备对应的席位） | `403 not_a_member` |
+| 该平台确实开了共享 | `400 entitlement_not_active` |
+| 我不是提供方本人 | `400 entitlement_is_self`（直接用自己就行） |
+| 提供方还在房间里 | `400 entitlement_owner_gone` |
+| 曲目是房间**当前**这一首 | `400 track_mismatch` |
+| 该曲目确实属于这个平台 | `400 platform_mismatch` |
+| 提供方的凭据在服务器上 | `400 credential_not_on_server` |
+
+#### 客户端要点
+
+- 换歌**前**先请求，拿不到就用自己正常解析。**不要因为拿不到就不播**
+- 拿到的地址直接当 `<audio src>`；失败（例如 Web 端设不了 Referer）回落 `/api/play/resolve`
+- **必须常驻显示「当前这首用的是谁的会员」**：播放条打标记，房间面板写清昵称。
+  否则用户既不知道为什么会突然能播，也判断不出共享有没有生效
+- 拿不到地址时提示一次即可，不要每次切歌都弹
+- 提供方退出后 `active` 变 `null`，缓存的地址立即作废（授权已被服务端撤销）
+
+#### 服务端不缓存地址
+
+地址有寿命（见上面的实测数据），业务层缓存只会制造「拿到一条已经过期的」。
+每次现解析即可——上游 URL 缓存（5 分钟）会兜住同一首歌的重复请求。
 
 ---
 
@@ -647,6 +834,38 @@ GET /api/rooms/overview/:partnerId
 
 冷启动 / 刷新时判断自己是哪种身份，走 7.2 的 `preview.mine` 流程。
 
+#### 把声音推到另一台（设备面板的「让声音切到这台」）
+
+「转移到本机」是在**要接的那台**上操作；设备面板里还可以在**原地把声音推过去**：
+
+```
+席位设备 ──command { target: 另一台, action: "takeSeat" }──▶ 网关 ──▶ 另一台
+另一台：收到后自己做一次 join（与「转移到本机」完全同一条路）
+服务端：席位换到另一台，连推 `seat_taken` + 全量快照（时序同上）
+```
+
+几条约定：
+
+- **指令只是通知。** 服务端不提供「替某台设备接席位」的接口——接席位永远是那台设备自己 `join`，
+  这样设备名、个人现场捕获、降级收尾都由它如实处理，不用服务端替它猜。
+- **发起方等的是房间状态**：`ok: true` 只代表通知送达；成功判据是「我账号的席位换到了它身上」。
+  超时（约 6 秒）就提示「没有接过去」，不要发完就报成功。
+- **接收方必须是「已在房间里的旁观设备」**：席位设备收到这条没有意义（它就是席位），
+  不在房间里的设备也没有席位可接——两者都直接忽略，发起方等到的就是超时。
+- **发起方不受席位限制**：席位设备和旁观设备都能发这条——它是设备级指令（`/api/connect/command`），
+  不占房间 action 的名额，也就不与「旁观设备不要发 action」冲突。
+- 目标不在线时网关回 `404 device_offline`，发起方应立即提示，不必等超时。
+
+房间里设备面板的可用操作：
+
+| 操作 | 房间里 |
+|---|---|
+| 看状态（在放什么、进度） | 保留 |
+| 调音量 | 保留，**席位设备也保留**（音量是设备属性，不是内容） |
+| 让声音切到这台 | 保留（非席位设备各一个入口） |
+| 播放 / 暂停 / 切歌 / 拖进度 / 模式 / 队列 | 仅对**非席位**设备；席位设备只读 |
+| 投放 / 接管 / 跟随 | **不出现**：它们改的是「谁在放」，房间里这件事只有 `join` 一条路 |
+
 ---
 
 ## 8. 错误码
@@ -657,6 +876,17 @@ GET /api/rooms/overview/:partnerId
 | 400 | `invalid_index` / `invalid_position` / `invalid_track` | 参数不合法 | 修 bug |
 | 400 | `unknown_action` | action 不在白名单 | 修 bug |
 | 400 | `invalid_mode` | `setMode` 的 `mode` 不是四个取值之一 | 修 bug |
+| 400 | `invalid_platform` | 会员共享的 `platform` 不是 `netease` / `qq` | 修 bug |
+| 400 | `entitlement_duo_only` | 在非双人房发起会员共享 | 隐藏该入口 |
+| 400 | `entitlement_target_missing` | 目标的席位已经不在房间里 | 刷新房间状态后再发起 |
+| 400 | `entitlement_request_missing` | `ackEntitlement` 时没有待确认请求（已撤销/对方已离开） | 忽略，回到最新快照 |
+| 403 | `entitlement_not_target` | 不是权益提供方本人却尝试确认 | 修 bug |
+| 400 | `entitlement_not_active` | 该平台没开启共享却来要地址 | 先确认共享已生效 |
+| 400 | `entitlement_is_self` | 自己是提供方却走共享取流 | 直接用自己解析 |
+| 400 | `entitlement_owner_gone` | 权益提供方的席位已不在房间里 | 刷新房间状态 |
+| 400 | `track_mismatch` | 请求的曲目已不是房间当前这首 | 重新取一次 |
+| 400 | `platform_mismatch` | 当前曲目不属于该平台 | 修 bug |
+| 400 | `credential_not_on_server` | 提供方的凭据没存在服务器上，无法代解析 | 提示对方改设置 |
 | 400 | `queue_full` / `queue_too_large` | 队列超限 | 提示用户 |
 | 400 | `room_empty` | 空房间执行了 `play` | 先 `setQueue` |
 | 400 | `room_kind_unsupported` | 创建了尚未开放的房间类型（`group`） | 隐藏该入口 |
@@ -691,3 +921,10 @@ GET /api/rooms/overview/:partnerId
 - [ ] 重连 / 刷新后先 `GET /api/rooms/:code` 看 `mine`，再决定 `join` 还是旁观（见 7.2）
 - [ ] 展示一起听时长：「本次」与「累计」两个读数要分别标清楚（见 7.5），
       `togetherCounting` 为真时按 `serverNow` + 时钟差自行推演
+- [ ] 会员共享面板：两个平台各一行三选一，默认「各自」；发起用 `setEntitlement`，
+      提供方确认用 `ackEntitlement`（见 5.4）
+- [ ] 提供方首次确认前展示风险告知（每房间每平台一次），文案见 5.4
+- [ ] 共享生效后，换歌前先 `POST /api/rooms/source` 要一条对方会员的地址，
+      拿不到就用自己正常解析（**不能因为拿不到就不播**）
+- [ ] 拿到的地址优先直连，失败回落自己的 `/api/play/resolve`；
+      播放器报错时重新请求并按当前进度恢复（见 5.5）

@@ -47,6 +47,20 @@ const LEADER_GRACE_MS = 15_000;
 const VOLUME_REPORT_DEBOUNCE_MS = 300;
 /** 下发指令后等目标设备补报状态的时长，超了提示「可能已离线」。 */
 const COMMAND_ACK_MS = 4_000;
+
+/** 等对方补报时的查询间隔，纯本地数值比较。 */
+const COMMAND_ACK_POLL_MS = 80;
+
+/**
+ * 一次远程指令的最终结果。
+ *
+ * `ok` 表示**对方确实执行了**（它补报了新状态），不是「网关收下了」——
+ * 两者差着一次往返，界面上的成功提示必须等前者。
+ */
+export type ControlResult = 'ok' | 'noResponse' | 'offline' | 'failed';
+
+/** 等「接管」的回程（对方把队列 `transfer` 回来）最长多久。 */
+const TAKE_OVER_MS = 5_000;
 /** 向对方要播放列表的最短间隔：面板反复开合不该变成请求洪流。 */
 const QUEUE_ASK_GAP_MS = 1_500;
 /** 遥控改了对方队列之后，等它落地再要最新那份（太快会拿到改之前的）。 */
@@ -203,8 +217,14 @@ export const useConnectStore = defineStore('connect', () => {
   let driftTimer: number | undefined;
   /** 音量上报的防抖句柄：拖动期间只报最后停下来的那个值。 */
   let volumeReportTimer: number | undefined;
-  /** 等待「送达确认」的定时器，stop() 时要一并清掉。 */
-  const ackTimers = new Set<number>();
+
+  /**
+   * 已经收到过几次对端的 `transfer`（回程）。
+   *
+   * 「接管」是个往返：本机发 `release`，对方才把队列回传过来。所以该等的确认是
+   * 回程到没到，而不是 `release` 有没有送出去。
+   */
+  const transferSeq = ref(0);
 
   /**
    * 上次上报时的进度基准：位置 + 本地单调时刻。
@@ -438,9 +458,16 @@ export const useConnectStore = defineStore('connect', () => {
       if (data?.action) void applyRemoteCommand(data.action, data.payload ?? null, String(data.from ?? ''));
     });
 
-    // 房间事件走同一条连接：原样转发给订阅者（room store）。
-    stream.addEventListener('room', (event) => emitRoom('room', readEvent(event)));
-    stream.addEventListener('room-playback', (event) => emitRoom('room-playback', readEvent(event)));
+    /*
+     * 房间事件走同一条连接：原样转发给订阅者（room store）。
+     *
+     * **每个事件名都必须在这里显式注册**：EventSource 不会替你转发没注册的事件，
+     * 漏一个的表现就是「服务端明明推了，界面毫无反应」——而且两边都不报错，很难查。
+     * 所以这里用循环，新增房间事件时只改这个数组。
+     */
+    for (const name of ['room', 'room-playback', 'room-entitlement']) {
+      stream.addEventListener(name, (event) => emitRoom(name, readEvent(event)));
+    }
 
     startReporting();
   }
@@ -459,8 +486,6 @@ export const useConnectStore = defineStore('connect', () => {
       window.clearTimeout(volumeReportTimer);
       volumeReportTimer = undefined;
     }
-    for (const timer of ackTimers) window.clearTimeout(timer);
-    ackTimers.clear();
     baseline = null;
     leaderMissingSince = null;
     following.value = null;
@@ -489,31 +514,46 @@ export const useConnectStore = defineStore('connect', () => {
     target: string,
     action: ConnectAction,
     payload?: ConnectCommandPayload,
-  ): Promise<void> {
+    /** 调用方自己处理结果时不弹提示（避免「没响应」和它自己的说明叠两条）。 */
+    silent = false,
+  ): Promise<ControlResult> {
     const known = devices.value.find((item) => item.deviceId === target);
-    const stamp = known?.state?.positionAt ?? 0;
+    const before = known?.state?.positionAt ?? null;
     const label = known?.name ?? '目标设备';
 
     try {
       await connectApi.command({ deviceId: deviceId.value, target, action, payload });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '控制失败');
-      return;
+      if (!silent) toast.error(error instanceof Error ? error.message : '控制失败');
+      return 'failed';
     }
 
-    // 接管是一个往返（release → 对端回传 transfer），把确认交给回程那一步。
-    if (action === 'release') return;
+    // 接管是一个往返（release → 对端回传 transfer），确认交给回程那一步；
+    // takeSeat 也不改播放进度，用 positionAt 判断「有没有响应」只会误报。
+    if (action === 'release' || action === 'takeSeat') return 'ok';
 
-    const timer = window.setTimeout(() => {
-      ackTimers.delete(timer);
+    /*
+     * 等确认：对方执行完会立刻补报状态，`positionAt` 变了就是它真的动了。
+     *
+     * 轮询而不是睡满：局域网里通常一百毫秒内就补报了，固定睡满 4 秒只会让
+     * 「已经成功了」这个结论凭空晚几秒才说出口。
+     */
+    const deadline = Date.now() + COMMAND_ACK_MS;
+    while (Date.now() < deadline) {
       const current = devices.value.find((item) => item.deviceId === target);
       if (!current) {
-        toast.info(`「${label}」已离线`);
-      } else if ((current.state?.positionAt ?? 0) <= stamp) {
-        toast.info(`「${label}」没有响应，可能已离线`);
+        if (!silent) toast.info(`「${label}」已离线`);
+        return 'offline';
       }
-    }, COMMAND_ACK_MS);
-    ackTimers.add(timer);
+      const after = current.state?.positionAt ?? null;
+      // 目标本来空闲（从没上报过状态）：现在有状态了，就是它执行并补报过。
+      // 早先一律要求「比之前大」，给一台空设备下指令必然被判成没响应。
+      if (after !== null && (before === null || after > before)) return 'ok';
+      await new Promise((resolve) => window.setTimeout(resolve, COMMAND_ACK_POLL_MS));
+    }
+
+    if (!silent) toast.info(`「${label}」没有响应，可能已离线`);
+    return 'noResponse';
   }
 
   // ---- 遥控对方的播放列表 ----
@@ -703,6 +743,8 @@ export const useConnectStore = defineStore('connect', () => {
           } else {
             player.play();
           }
+          // 回程到了：正等着的 takeOver 靠它判成功（`play` 不算，那只是让我们开始播）。
+          if (action === 'transfer') transferSeq.value += 1;
           break;
         }
 
@@ -718,6 +760,19 @@ export const useConnectStore = defineStore('connect', () => {
             });
           }
           break;
+
+        case 'takeSeat': {
+          /*
+           * 一起听：另一台设备请本机把房间的席位接过去。
+           *
+           * 走的是和「转移到本机」完全同一条路（`join` 接席位），不另起一套实现——
+           * 否则两条路径的行为迟早长歪。本机已经是席位时什么也不用做。
+           */
+          const { useRoomStore } = await import('./room');
+          const room = useRoomStore();
+          if (room.spectating) await room.transfer();
+          break;
+        }
 
         case 'pause':
           player.pause();
@@ -960,18 +1015,18 @@ export const useConnectStore = defineStore('connect', () => {
    * 本机只把意图发出去，真正把自己设成跟随者的还是对方：它会写在自己的 following 里，
    * 随下一次状态上报带回来。所以这个方向不需要本机维护任何状态。
    */
-  async function requestFollow(device: ConnectDevice): Promise<void> {
+  async function requestFollow(device: ConnectDevice): Promise<ControlResult> {
     /*
      * 防循环：本机正在跟随对方的话，先停掉 —— 对方要镜像的是本机的状态，
      * 本机不能同时又镜像对方，否则两边互相拉扯。
      */
     if (following.value === device.deviceId) stopFollowing();
-    await control(device.deviceId, 'follow');
+    return control(device.deviceId, 'follow');
   }
 
   /** 请对方停止跟随本机。 */
-  async function cancelFollow(device: ConnectDevice): Promise<void> {
-    await control(device.deviceId, 'unfollow');
+  async function cancelFollow(device: ConnectDevice): Promise<ControlResult> {
+    return control(device.deviceId, 'unfollow');
   }
 
   /**
@@ -980,8 +1035,29 @@ export const useConnectStore = defineStore('connect', () => {
    * 本机并不掌握对方的队列，所以这里只发一条 release：对方停下，
    * 再把它手里的队列与进度用 transfer 回传给本机。
    */
-  async function takeOver(device: ConnectDevice): Promise<void> {
-    await control(device.deviceId, 'release');
+  /**
+   * 接管对方的播放（协议里的场景 A）。
+   *
+   * 发 `release` 只是「请了」——真正发生的是对方暂停自己、把队列 `transfer` 回本机。
+   * 所以等的是回程：`transferSeq` 涨了才算成功，超时就如实说没交过来。
+   */
+  async function takeOver(device: ConnectDevice): Promise<boolean> {
+    const seen = transferSeq.value;
+    const result = await control(device.deviceId, 'release', undefined, true);
+    if (result !== 'ok') {
+      toast.info(
+        result === 'offline' ? `「${device.name}」可能已离线` : '没发出去，检查一下网络',
+      );
+      return false;
+    }
+
+    const deadline = Date.now() + TAKE_OVER_MS;
+    while (Date.now() < deadline) {
+      if (transferSeq.value > seen) return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+    toast.info(`「${device.name}」没有把播放交过来，可能已离线`);
+    return false;
   }
 
   /** 改设备名（例如「客厅的电脑」）。名字随连接带上服务端，所以要重连一次。 */
@@ -1011,6 +1087,8 @@ export const useConnectStore = defineStore('connect', () => {
     stop,
     report,
     control,
+    /** 只发指令、不等回执（返回是否送达）：用于不改播放进度的一类，如一起听接席位。 */
+    send,
     takeOver,
     /** 按 deviceId 缓存的对方播放列表（`queue` 请求的应答）。 */
     remoteQueues,

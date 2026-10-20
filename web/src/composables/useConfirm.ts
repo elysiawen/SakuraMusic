@@ -1,9 +1,20 @@
 import { readonly, ref } from 'vue';
 
+/** 一条后果：一行只说一件事，扫得动也就真的会被读到。 */
+export interface ConfirmPoint {
+  text: string;
+  /** 会造成账号风险的条目，用危险色标出来；全都标红等于没标。 */
+  danger?: boolean;
+}
+
 export interface ConfirmOptions {
   title: string;
-  /** 补充说明，可以写清楚后果。 */
+  /** 铺垫一句就够，别把长段话塞进来——后果请用 [points] 逐条列。 */
   message?: string;
+  /** 逐条列出的后果。列表比一整段话好读，也不会被一眼扫过去。 */
+  points?: ConfirmPoint[];
+  /** 列表之后的一句收尾（比如「随时可以取消」）。 */
+  note?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   /** 危险操作（删除、解绑等）：确认按钮渲染成红色。 */
