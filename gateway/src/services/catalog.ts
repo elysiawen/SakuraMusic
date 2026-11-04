@@ -168,9 +168,16 @@ function relevance(entry: MergedTrack, keyword: string): number {
   const track = entry.track;
   const targetTitle = normalizeTitleStrict(keyword);
   const title = normalizeTitleStrict(track.title);
+  /*
+   * 「是不是同一首」用宽松版判断：`(Live)`、`(2010 The Era超时代演唱会)` 这类只是同一首歌的
+   * 另一种演绎，不该按「标题不相等」扣分 —— 一扣就会被一堆标题恰好同名的翻唱挤到后面去。
+   * 层级里的前两种（前缀 / 包含）仍用严格版：那是「没那么像」的档，宽松会误伤。
+   */
+  const looseTitle = normalizeTitle(track.title);
+  const looseTarget = normalizeTitle(keyword);
   let score = 0;
   if (targetTitle) {
-    if (title === targetTitle) score += 120;
+    if (looseTitle && looseTitle === looseTarget) score += 120;
     else if (title.startsWith(targetTitle)) score += 70;
     else if (title.includes(targetTitle)) score += 40;
   }

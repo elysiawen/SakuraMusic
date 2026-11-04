@@ -152,7 +152,7 @@ export function mapQqSong(input: unknown): UnifiedTrack | null {
   const mid = str(song.mid);
   if (!mid) return null;
   const album = asObj(song.album);
-  const albumMid = firstStr(album.mid, album.pmid);
+  const albumMid = qqAlbumMid(album);
   const artists = asArr(song.singer)
     .map((item) => {
       const singer = asObj(item);
@@ -167,7 +167,11 @@ export function mapQqSong(input: unknown): UnifiedTrack | null {
   const files = qqFileInfo(song.file);
   return {
     key: trackKey(PLATFORM, mid),
-    title: stripHtml(firstStr(song.name, song.title, song.title_main)),
+    /*
+     * `title` 才是**带版本后缀**的那个（`开不了口 (Live)`、`开不了口 (2010 The Era超时代演唱会)`），
+     * `name` 只有歌名。同名多版本（原唱 / 现场 / 翻唱）全靠这个后缀区分，所以优先取它。
+     */
+    title: stripHtml(firstStr(song.title, song.name, song.title_main)),
     artists: artists.length > 0 ? artists : [{ name: '未知歌手' }],
     album: {
       name: firstStr(album.name, album.title),
@@ -248,6 +252,19 @@ function qqImage(value: unknown, kind: 'singer' | 'album', mid: string): string 
   if (!mid) return undefined;
   const prefix = kind === 'singer' ? 'T001R300x300M000' : 'T002R300x300M000';
   return `https://y.gtimg.cn/music/photo_new/${prefix}${mid}.jpg`;
+}
+
+/**
+ * 专辑 mid。
+ *
+ * 老库与演唱会条目常常只给 `pmid`（`album.mid` 是空串）——那是「专辑 mid + `_序号`」的形状，
+ * 去掉尾缀才和别处的专辑对得上：封面能拼出真图，专辑详情也认这个 mid。
+ * 直接拿带序号的 pmid 去拼，CDN 虽然也回图，但主键就带上了序号，跨接口比对时会认成两张专辑。
+ */
+function qqAlbumMid(album: Record<string, unknown>): string {
+  const direct = str(album.mid);
+  if (direct) return direct;
+  return str(album.pmid).replace(/_\d+$/, '');
 }
 
 export function mapQqArtist(raw: unknown): PlatformArtist | null {
