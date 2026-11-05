@@ -2,7 +2,7 @@
   "name": "@sakura/netease-upstream",
   "version": "0.1.0",
   "private": true,
-  "description": "网易云上游（本仓库自带）：钉住发布版 SDK 的薄 HTTP 层，网关只按固定的 18 个接口调用它",
+  "description": "网易云上游（本仓库自带）：钉住发布版 SDK 的薄 HTTP 层，网关只按 endpoints.ts 注册的接口调用它",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

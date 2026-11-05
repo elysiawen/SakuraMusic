@@ -470,12 +470,33 @@ export async function resolveAudioUrl(
   return trialFallback;
 }
 
+/**
+ * 逐字歌词（YRC）在 SDK 的 `lyric_new`（`/api/song/lyric/v1`）里，老接口 `/lyric` 只有按行 LRC。
+ * folia 用的就是同一个 SDK 的这条路由；上游薄壳把它注册成 `/lyric/new` 后，cookie 照常透传。
+ * 老接口 `/lyric` 实测不带 yrc（同一首歌只有新版有），且逐字歌词有覆盖率：部分歌曲下游
+ * 不下发 yrc，取不到时静默降级，按行歌词照常可用。
+ */
+async function wordLyric(id: string, cookie: string | null): Promise<string> {
+  try {
+    const body = unwrap(await upstreamJson<RawResponse>('/lyric/new', { cookie, query: { id } }));
+    // 与 folia 的兼容一致：有的响应把歌词字段嵌在 data 里，yrc 也可能挂在 lrc 下。
+    const root = body.yrc || body.lrc ? body : asObj(body.data);
+    return str(asObj(root.yrc).lyric) || str(asObj(asObj(root.lrc).yrc).lyric);
+  } catch {
+    return '';
+  }
+}
+
 export async function lyric(id: string, cookie: string | null): Promise<LyricResult> {
-  const body = unwrap(await upstreamJson<RawResponse>('/lyric', { cookie, query: { id } }));
+  const [body, yrc] = await Promise.all([
+    upstreamJson<RawResponse>('/lyric', { cookie, query: { id } }).then(unwrap),
+    wordLyric(id, cookie),
+  ]);
   return {
     lrc: str(asObj(body.lrc).lyric),
     trans: str(asObj(body.tlyric).lyric),
     roma: str(asObj(body.romalrc).lyric),
+    yrc: yrc || undefined,
   };
 }
 

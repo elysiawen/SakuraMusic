@@ -15,10 +15,15 @@ export interface TrackSource {
   numericId?: string;
 }
 
+/** 按行 LRC 与逐字歌词都原样返回，由客户端按可用性自己选择。 */
 export interface LyricResult {
   lrc: string;
   trans: string;
   roma: string;
+  /** 网易云 YRC 逐字 lyrics 原文；上游没给时缺省。 */
+  yrc?: string;
+  /** QQ 音乐 QRC 逐字歌词原文；上游没给时缺省。 */
+  qrc?: string;
 }
 
 export interface UnifiedTrack {

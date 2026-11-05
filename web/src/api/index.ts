@@ -7,6 +7,7 @@ import type {
   BindStartResult,
   CollectionDetail,
   DiscoverFeed,
+  LyricResult,
   Playlist,
   PlaylistSummary,
   PlayResolveResult,
@@ -88,9 +89,7 @@ export const musicApi = {
   track: (platform: Platform, id: string) =>
     apiRequest<{ track: UnifiedTrack }>(`/api/track/${platform}/${encodeURIComponent(id)}`),
   lyric: (platform: Platform, id: string) =>
-    apiRequest<{ lrc: string; trans: string; roma: string }>(
-      `/api/track/${platform}/${encodeURIComponent(id)}/lyric`,
-    ),
+    apiRequest<LyricResult>(`/api/track/${platform}/${encodeURIComponent(id)}/lyric`),
   resolvePlay: (platform: Platform, id: string, quality: Quality) =>
     apiRequest<PlayResolveResult>('/api/play/resolve', {
       method: 'POST',

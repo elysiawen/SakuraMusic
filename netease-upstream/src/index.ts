@@ -1,7 +1,7 @@
 /**
  * 网易云上游（本仓库自带）。
  *
- * 它是**薄薄一层 HTTP**：把网关要用的 18 个接口（见 `endpoints.ts`）转成上游 SDK 的函数调用。
+ * 它是**薄薄一层 HTTP**：把网关要用的接口（见 `endpoints.ts`）转成上游 SDK 的函数调用。
  * SDK 是 npm 上的发布版、版本钉死在 package.json 里（`@neteasecloudmusicapienhanced/api`）——
  * 与 `qq-upstream/` 依赖 PyPI 发布版 `qqmusic-api-python==0.8.2` 是同一个思路：
  * **上游的重活（加密、风控、接口变更）由别人维护，我们只维护契约。**

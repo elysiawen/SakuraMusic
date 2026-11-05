@@ -157,10 +157,18 @@ export interface PlaylistSummary {
   trackCount?: number;
 }
 
+/**
+ * 歌词原文：按行 LRC 与逐字歌词同时保留，由客户端自己决定用哪一种。
+ * `yrc`（网易云）/ `qrc`（QQ 音乐）是各平台返回的逐字原文，上游没给时缺省。
+ */
 export interface LyricResult {
   lrc: string;
   trans: string;
   roma: string;
+  /** 网易云 YRC 逐字歌词原文，格式 `[行开始ms,时长ms](字开始ms,时长ms,0)字`。 */
+  yrc?: string;
+  /** QQ 音乐 QRC 逐字歌词原文，格式 `[行开始ms,时长ms]字(字开始ms,时长ms)`。 */
+  qrc?: string;
 }
 
 export interface AccountProfile {

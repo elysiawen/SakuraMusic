@@ -230,6 +230,13 @@ export const usePlayerStore = defineStore('player', () => {
     toast.error(message);
   }
   const currentTime = ref(0);
+  /**
+   * 逐字歌词用的高精度时间：`timeupdate` 约 250ms 才来一次，字级进度必须
+   * 直接读 audio.currentTime。不把 audio 元素暴露出去，播放器封装边界不变。
+   */
+  function preciseTime(): number {
+    return audio?.currentTime ?? currentTime.value;
+  }
   const duration = ref(0);
   const volume = ref(typeof persisted.volume === 'number' ? persisted.volume : 0.8);
   const muted = ref(false);
@@ -1182,6 +1189,8 @@ export const usePlayerStore = defineStore('player', () => {
     /** 接管「一曲播完」：'一起听'用它把换歌交给服务端。 */
     setEndHandler,
     currentTime,
+    /** 逐字歌词用的高精度播放时间（秒）。 */
+    preciseTime,
     duration,
     volume,
     muted,

@@ -427,19 +427,40 @@ export async function resolveAudioUrl(
   return null;
 }
 
+/**
+ * 逐字歌词（QRC）与普通 LRC 是同一个接口的两种返回格式，由 `qrc` 开关切换：
+ * 打开后 SDK 的 `lyric` 字段会变成 QRC 文本，所以必须**分开取**，不能覆盖 `lrc`。
+ * 上游的缓存键本身包含 `qrc`，两次请求互不干扰。
+ */
+async function wordLyric(id: string, cookie: string | null): Promise<string> {
+  const path = `/song/${encodeURIComponent(id)}/lyric`;
+  try {
+    const data = unwrap(
+      await upstreamJson<RawResponse>(BASE, path, { cookie, query: { qrc: 'true' } }),
+      path,
+    );
+    return str(asObj(data).lyric);
+  } catch {
+    // 没有逐字歌词、上游不支持或权限不足时都按「没有」处理，按行歌词照常可用。
+    return '';
+  }
+}
+
 export async function lyric(id: string, cookie: string | null): Promise<LyricResult> {
-  const data = unwrap(
-    await upstreamJson<RawResponse>(BASE, `/song/${encodeURIComponent(id)}/lyric`, {
+  const path = `/song/${encodeURIComponent(id)}/lyric`;
+  const [response, qrc] = await Promise.all([
+    upstreamJson<RawResponse>(BASE, path, {
       cookie,
       query: { trans: 'true', roma: 'true' },
     }),
-    `/song/${id}/lyric`,
-  );
-  const lyricData = asObj(data);
+    wordLyric(id, cookie),
+  ]);
+  const lyricData = asObj(unwrap(response, path));
   return {
     lrc: str(lyricData.lyric),
     trans: str(lyricData.trans),
     roma: str(lyricData.roma),
+    qrc: qrc || undefined,
   };
 }
 

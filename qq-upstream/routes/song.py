@@ -86,7 +86,7 @@ async def song_lyric(
     roma: bool = Query(False),
     singing_annotations: bool = Query(False),
 ) -> dict[str, object]:
-    """歌词。网关要 `lyric` / `trans` / `roma` 三个字段。"""
+    """歌词。按行版网关取 `lyric` / `trans` / `roma`；`qrc=true` 时 `lyric` 返回逐字 QRC 文本。"""
     credential = credential_from_cookie(request.headers.get("cookie", ""))
     song = _song_value(value)
 

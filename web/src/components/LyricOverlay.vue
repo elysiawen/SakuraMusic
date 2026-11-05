@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 import { usePlayerStore } from '@/stores/player';
 import { useTransport } from '@/composables/useTransport';
-import { activeLineIndex, parseLyric, type LyricLine } from '@/utils/lyric';
+import { activeLineIndex, parseLyricResult, wordProgress, type LyricLine } from '@/utils/lyric';
 import AppIcon from './AppIcon.vue';
 import CoverArt from './CoverArt.vue';
 import DevicePicker from './DevicePicker.vue';
@@ -50,9 +50,59 @@ let manualScrollUntil = 0;
 
 const track = computed(() => player.current);
 const cover = computed(() => track.value?.album.cover ?? '');
-const lines = computed<LyricLine[]>(() => parseLyric(player.lyric.lrc, player.lyric.trans, player.lyric.roma));
-const activeIndex = computed(() => activeLineIndex(lines.value, player.currentTime));
+/**
+ * 上游给的两种歌词都原样保留：逐字数据能解析出字级时间轴就按字渲染，否则自动退回按行。
+ * 客户端只在这里做选择，切歌、换平台都不需要额外分支。
+ */
+const lyricDoc = computed(() => parseLyricResult(player.lyric));
+const lines = computed<LyricLine[]>(() => lyricDoc.value.lines);
+const wordByWord = computed(() => lyricDoc.value.wordByWord);
 const hasLyric = computed(() => lines.value.length > 0);
+
+/*
+ * 逐字进度要跟到帧：`timeupdate` 只有 ~250ms 粒度，直接读 audio.currentTime 才不跳字。
+ * 只在「逐字歌词 + 歌词页打开」时跑 rAF，按行模式下不额外占一个帧循环。
+ */
+const frameTime = ref(0);
+let rafId = 0;
+
+function tick(): void {
+  frameTime.value = player.preciseTime();
+  rafId = requestAnimationFrame(tick);
+}
+
+watch(
+  [wordByWord, () => player.expanded],
+  ([word, expanded]) => {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    if (!word || !expanded) {
+      frameTime.value = 0;
+      return;
+    }
+    frameTime.value = player.preciseTime();
+    rafId = requestAnimationFrame(tick);
+  },
+  { immediate: true },
+);
+
+const displayTime = computed(() =>
+  wordByWord.value && player.expanded ? frameTime.value : player.currentTime,
+);
+const activeIndex = computed(() => activeLineIndex(lines.value, displayTime.value));
+
+/** 只有当前行需要字级进度，避免每帧给整份歌词都算一遍。 */
+const activeWordProgress = computed(() => {
+  const line = lines.value[activeIndex.value];
+  if (!wordByWord.value || !line?.words) return [];
+  return wordProgress(line.words, displayTime.value);
+});
+
+/** 每个字用 CSS 变量传进度，唱过的字与当前字的擦除比例交给样式层渲染。 */
+function wordStyle(lineIndex: number, wordIndex: number): CSSProperties | undefined {
+  if (lineIndex !== activeIndex.value) return undefined;
+  return { '--word-progress': String(activeWordProgress.value[wordIndex] ?? 0) } as CSSProperties;
+}
 
 /** 距离当前行越远越淡，形成聚焦式的视觉层次。 */
 function lineOpacity(index: number): number {
@@ -146,7 +196,10 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown));
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
+  if (rafId) cancelAnimationFrame(rafId);
+});
 </script>
 
 <template>
@@ -273,11 +326,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
                 :key="`${line.time}-${index}`"
                 :ref="(element) => setLineRef(index, element as Element | null)"
                 class="lyric-line"
-                :class="{ 'is-active': index === activeIndex }"
+                :class="{ 'is-active': index === activeIndex, 'is-word': !!line.words }"
                 :style="{ opacity: lineOpacity(index) }"
                 @click="transport.seek(line.time)"
               >
-                <span class="lyric-text">{{ line.text || '♪' }}</span>
+                <span v-if="line.words" class="lyric-text lyric-words">
+                  <span
+                    v-for="(word, wordIndex) in line.words"
+                    :key="wordIndex"
+                    class="lyric-word"
+                    :style="wordStyle(index, wordIndex)"
+                  >{{ word.text }}</span>
+                </span>
+                <span v-else class="lyric-text">{{ line.text || '♪' }}</span>
                 <span v-if="line.trans" class="lyric-trans">{{ line.trans }}</span>
               </p>
             </template>
@@ -692,6 +753,46 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
 [data-theme='dark'] .lyric-line.is-active {
   color: var(--brand-300);
+}
+
+/* ------------------------------ 逐字歌词 ------------------------------ */
+.lyric-words {
+  --lyric-sung: var(--brand-600);
+  --lyric-idle: var(--text);
+  white-space: pre-wrap;
+}
+
+[data-theme='dark'] .lyric-words {
+  --lyric-sung: var(--brand-300);
+}
+
+.lyric-word {
+  --word-progress: 0;
+}
+
+/* 活动行不再整行变色：逐字模式由每个字自己的擦除进度决定颜色。 */
+.lyric-line.is-word.is-active {
+  color: var(--text);
+}
+
+.lyric-line.is-word.is-active .lyric-text {
+  text-shadow: none;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .lyric-line.is-word.is-active .lyric-word {
+    background-image: linear-gradient(
+      90deg,
+      var(--lyric-sung) 0%,
+      var(--lyric-sung) calc(var(--word-progress) * 100%),
+      var(--lyric-idle) calc(var(--word-progress) * 100%),
+      var(--lyric-idle) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
 }
 
 .lyric-empty {

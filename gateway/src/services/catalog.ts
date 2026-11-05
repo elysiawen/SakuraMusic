@@ -6,6 +6,7 @@ import type { FastifyRequest } from 'fastify';
 import {
   formatArtists,
   type ArtistRef,
+  type LyricResult,
   type Platform,
   type PlatformAlbum,
   type PlatformArtist,
@@ -639,7 +640,7 @@ export async function loadLyric(
   userId: string,
   platform: Platform,
   id: string,
-): Promise<{ lrc: string; trans: string; roma: string }> {
+): Promise<LyricResult> {
   const cookie = await resolveCookie(request, platform, userId);
   return adapterOf(platform).lyric(id, cookie);
 }

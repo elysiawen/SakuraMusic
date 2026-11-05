@@ -80,7 +80,7 @@ export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
     return { track };
   });
 
-  /** 歌词（含翻译与罗马音）。 */
+  /** 歌词（按行 LRC + 翻译/罗马音 + 上游有则返回逐字歌词，由客户端选择）。 */
   app.get<{ Params: { platform: string; id: string } }>('/api/track/:platform/:id/lyric', async (request) => {
     const user = await requireUser(request);
     const platform = assertPlatform(request.params.platform);
