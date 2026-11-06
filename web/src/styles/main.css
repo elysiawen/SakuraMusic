@@ -37,6 +37,13 @@
   --surface: rgba(var(--glass-tint), 0.66);
   --surface-strong: rgba(var(--glass-tint), 0.88);
   --surface-hover: rgba(var(--glass-tint), 0.96);
+  /*
+   * 浮层面板统一底色：不透明，跟随 --glass-tint 自动适配明暗与 6 套配色。
+   * 音质面板 Teleport 到 body，backdrop-filter 能模糊整页；其余面板嵌在播放条 / 顶栏里，
+   * 父级自己就是 backdrop root，半透明底色会把自定义背景图、樱花与歌词直接透出来。
+   * 统一用实色后，面板在哪一层、背后是什么，看起来都和音质面板一致。
+   */
+  --panel-bg: rgb(var(--glass-tint));
   --text: #2b2230;
   --text-soft: #6f6475;
   --text-mute: #a094a6;
@@ -74,6 +81,7 @@
   --surface: rgba(var(--glass-tint), 0.62);
   --surface-strong: rgba(var(--glass-tint), 0.88);
   --surface-hover: rgba(var(--glass-tint), 0.94);
+  --panel-bg: rgb(var(--glass-tint));
   --text: #f4edf6;
   --text-soft: #b8aabc;
   --text-mute: #8b7f90;

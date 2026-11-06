@@ -103,7 +103,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   width: 216px;
   padding: 6px;
   border-radius: var(--radius);
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

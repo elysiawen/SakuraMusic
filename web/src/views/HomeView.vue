@@ -65,11 +65,13 @@ const collectionSections = computed(() =>
 );
 
 /**
- * 两张卡片**固定按平台渲染**：电台和播放一样不受「首页推荐」开关影响，
- * 没绑定账号时对应板块会缺失（只有占位封面），但入口依然在，点了会说明原因。
+ * 电台卡片跟着「首页推荐」的平台集合走：平台总开关或该平台的「首页推荐」能力被关掉时，
+ * 卡片一起隐藏。否则 feed 里没有对应板块，占位卡片点开会退化成「现取一批」，
+ * 反而绕过开关继续向这个平台发请求 —— 表现就是「源都关了，私人 FM 还在」。
+ * 没绑定账号时板块会缺失，但平台仍是启用的，卡片保留（只有占位封面）。
  */
 const radioCards = computed(() =>
-  PLATFORMS.map((platform) => ({
+  PLATFORMS.filter((platform) => preferences.isEnabled(platform, 'discover')).map((platform) => ({
     platform,
     section: (feed.value?.sections ?? []).find(
       (item) => item.key === RADIO_SECTION_BY_PLATFORM[platform] && item.kind === 'tracks',

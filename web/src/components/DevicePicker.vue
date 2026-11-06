@@ -1109,9 +1109,9 @@ function commitRename(): void {
   flex-direction: column;
   gap: 10px;
   z-index: 45;
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
-  /* surface-strong 只有 88% 不透明，必须配毛玻璃——否则全屏歌词页上的歌词会直接透过来。 */
+  /* 统一用实色面板底色：嵌在播放条里时 backdrop-filter 模糊不到页面，半透明会把歌词透出来。 */
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
   box-shadow: var(--shadow-lg);
@@ -1397,7 +1397,7 @@ function commitRename(): void {
   display: flex;
   flex-direction: column;
   border-radius: var(--radius);
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

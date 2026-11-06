@@ -209,8 +209,8 @@ async function logout(): Promise<void> {
   flex-direction: column;
   gap: 2px;
   z-index: 40;
-  /* 菜单需要足够不透明才可读，否则背后的封面与按钮会透出来。 */
-  background: var(--surface-strong);
+  /* 与播放条上的浮层面板同一套底色，背后的封面与按钮不会透出来。 */
+  background: var(--panel-bg);
   box-shadow: var(--shadow-lg);
 }
 

@@ -125,7 +125,7 @@ watch(
   max-height: min(58vh, 540px);
   padding: 14px 14px 8px;
   border-radius: var(--radius-lg);
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

@@ -113,7 +113,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   flex-direction: column;
   gap: 10px;
   z-index: 45;
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

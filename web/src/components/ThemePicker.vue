@@ -98,7 +98,7 @@ const expanded = () => (props.variant === 'full' ? true : open.value);
   width: 292px;
   padding: 15px 16px;
   border-radius: var(--radius);
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

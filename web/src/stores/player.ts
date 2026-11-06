@@ -73,8 +73,11 @@ interface PersistedPlayerState {
   queue?: UnifiedTrack[];
   index?: number;
   position?: number;
-  /** 上次的电台现场：刷新后还能接着自动续歌（服务端会话丢了会自动新建一个）。 */
-  radio?: { platform: Platform; session: string; hasMore: boolean };
+  /**
+   * 上次的电台现场：只在电台仍激活时写入，退出电台会立刻删掉，刷新后不会复活。
+   * 老版本用的键名是 `radio`，那批存档可能停留在「已退出」状态，一律不再读取。
+   */
+  radioLive?: { platform: Platform; session: string };
 }
 
 const STORAGE_KEY = 'sakura.player';
@@ -109,6 +112,27 @@ function loadPersisted(): Partial<PersistedPlayerState> {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Partial<PersistedPlayerState>;
   } catch {
     return {};
+  }
+}
+
+/**
+ * 只从落盘里抹掉电台现场，不动队列与进度。
+ *
+ * 「退出电台」必须同步生效：队列 watch 与 2 秒一次的 persistSoon 都不会因为
+ * radio 变成 null 而立刻写盘，等用户刷新时那份现场还在，重启又被当成电台恢复。
+ * 也不能直接调 persist() —— 一起听期间落盘是暂停的，且它会把房间队列写进个人现场。
+ */
+function clearPersistedRadio(): void {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    if (!('radioLive' in state) && !('radio' in state)) return;
+    delete state.radioLive;
+    delete state.radio; // 老键名一并清掉，免得旧存档以后又被读回来
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // 存储被禁用或内容被改坏：内存里的电台已经停了，下次写盘会覆盖它。
   }
 }
 
@@ -185,6 +209,12 @@ export const usePlayerStore = defineStore('player', () => {
    * 等于把所有本机电台的续播全挡死了 —— 表现就是「到最后一首点下一首没反应」。
    */
   let endActive: (() => boolean) | null = null;
+  /**
+   * 「这个平台还允许听电台吗」由应用外壳注入（读平台开关偏好）。
+   * 不直接在 player 里 import preferences：它经 auth store 又反过来引用 player，
+   * 会形成模块初始化环 —— 和 endActive 一样用注入更稳。
+   */
+  let radioPlatformAllowed: ((platform: Platform) => boolean) | null = null;
   /** 上次发起续播的时刻；成功清零，失败留作冷却。 */
   let radioRetryAt = 0;
   /** 续播提示的节流：timeupdate 每 250ms 一拍，别把 toast 刷屏。 */
@@ -204,6 +234,22 @@ export const usePlayerStore = defineStore('player', () => {
   /** 只有房间席位真的接管本机播放时才为真。 */
   function roomControlsPlayback(): boolean {
     return Boolean(endHandler && endActive?.());
+  }
+
+  /** 注入平台开关判定：关掉的平台连一次续播请求都不该再发出去。 */
+  function setRadioPlatformGuard(guard: (platform: Platform) => boolean): void {
+    radioPlatformAllowed = guard;
+  }
+
+  /**
+   * 平台在设置里被停用（含刷新后从存档恢复的电台）：就地结束电台流，
+   * 返回 true 表示调用方应立刻停手，别再排重试或打请求。
+   */
+  function stopRadioIfBlocked(): boolean {
+    const state = radio.value;
+    if (!state || !radioPlatformAllowed || radioPlatformAllowed(state.platform)) return false;
+    stopRadio();
+    return true;
   }
 
   /**
@@ -447,13 +493,14 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   // 电台现场跟着队列一起回来：队列里的歌还在，快放完时就能接着自动续。
-  if (persisted.radio?.platform && Array.isArray(persisted.queue) && persisted.queue.length > 0) {
+  // 只读 radioLive —— 退出电台时这个键会被立刻删掉，刷新后就是普通队列，不会复活。
+  if (persisted.radioLive?.platform && Array.isArray(persisted.queue) && persisted.queue.length > 0) {
     radio.value = {
-      platform: persisted.radio.platform,
-      session: persisted.radio.session ?? '',
+      platform: persisted.radioLive.platform,
+      session: persisted.radioLive.session ?? '',
       loading: false,
-      // 旧版本可能往 localStorage 里存过 hasMore: false；电台是否激活只看它是否存在，
-      // 刷新后一律按「还能续」恢复，别让历史数据把电台钉死。
+      // 是否还能续只看「电台是否存在」：旧版本存过 hasMore: false 会把电台钉死，
+      // 一律按可续恢复，空批次交给冷却重试。
       hasMore: true,
     };
   }
@@ -499,11 +546,10 @@ export const usePlayerStore = defineStore('player', () => {
       queue: capped.queue,
       index: capped.index,
       position: currentTime.value,
-      radio: radio.value
+      radioLive: radio.value
         ? {
             platform: radio.value.platform,
             session: radio.value.session,
-            hasMore: radio.value.hasMore,
           }
         : undefined,
     };
@@ -1001,9 +1047,14 @@ export const usePlayerStore = defineStore('player', () => {
   /* ------------------------------ 电台续播 ------------------------------ */
 
   function stopRadio(): void {
+    const wasActive = radio.value !== null;
     radio.value = null;
     radioRetryAt = 0;
     radioTailStopped = false;
+    // 房间接管时暂存的那份也要丢掉，否则退房后 syncRadioPause 会把刚退出的电台又放回来。
+    pausedRadio = null;
+    // 只清内存不够：存档里的电台现场还在，刷新就会被「恢复上次现场」原样读回来。
+    if (wasActive) clearPersistedRadio();
   }
 
   /** 向网关要一批：`reset` 表示新开一个电台，否则带上会话号与当前队列的 key 去重。 */
@@ -1012,6 +1063,8 @@ export const usePlayerStore = defineStore('player', () => {
   ): Promise<UnifiedTrack[]> {
     const state = radio.value;
     if (!state || state.loading) return [];
+    // 硬底线：设置里关掉的平台不再发任何电台请求（刷新恢复的电台也走这里）。
+    if (stopRadioIfBlocked()) return [];
     radio.value = { ...state, loading: true };
     try {
       const batch = await musicApi.radio(
@@ -1071,6 +1124,7 @@ export const usePlayerStore = defineStore('player', () => {
     platform: Platform,
     initialTracks: UnifiedTrack[] = [],
   ): Promise<UnifiedTrack[]> {
+    if (radioPlatformAllowed && !radioPlatformAllowed(platform)) return [];
     stopRadio();
     radio.value = { platform, session: '', loading: false, hasMore: true };
 
@@ -1096,6 +1150,7 @@ export const usePlayerStore = defineStore('player', () => {
   async function doRefill(force: boolean): Promise<number> {
     const state = radio.value;
     if (!state || roomControlsPlayback()) return 0;
+    if (stopRadioIfBlocked()) return 0;
     if (!force && Date.now() - radioRetryAt < RADIO_RETRY_MS) return 0;
     const items = await fetchRadio({ exclude: queue.value.map((item) => item.key) });
     // 请求期间用户可能换了歌单/停掉了电台：这时绝不能把电台歌塞进新队列。
@@ -1157,6 +1212,7 @@ export const usePlayerStore = defineStore('player', () => {
   /** 最后一首开始播了才补下一批：首页那批按顺序放完，期间不打扰上游。 */
   function maybeRefill(): void {
     syncRadioPause();
+    if (stopRadioIfBlocked()) return;
     const state = radio.value;
     if (!state || state.loading || roomControlsPlayback()) return;
     if (Date.now() - radioRetryAt < RADIO_RETRY_MS) return;
@@ -1520,6 +1576,7 @@ export const usePlayerStore = defineStore('player', () => {
     hasNext,
     /** 当前电台（null = 普通队列）；队列面板可据此显示「自动续播中」。 */
     radio,
+    setRadioPlatformGuard,
     playTrack,
     playQueue,
     startRadio,

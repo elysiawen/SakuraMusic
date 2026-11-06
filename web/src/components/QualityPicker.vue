@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 24px);
   padding: 6px;
   border-radius: var(--radius);
-  background: var(--surface-strong);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));

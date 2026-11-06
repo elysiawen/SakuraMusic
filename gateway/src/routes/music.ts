@@ -131,7 +131,8 @@ export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
    * `session` 是上次返回的会话号（首次不传）；`exclude` 是当前队列里的 `track.key`，
    * 逗号分隔，用来在会话丢失/换设备时接上去重；`limit` 默认 6、上限 10
    * （上游电台一批也就 3~5 首，这里只是个上限，不会为凑数反复打上游）。
-   * 与发现页不同，这里不受「首页推荐」开关影响 —— 电台是用户主动点开的，和播放一样。
+   * 平台是否启用由前端按偏好判定（与搜索 / 发现页一致）：总开关或「首页推荐」
+   * 能力被关掉的平台不会渲染电台卡片、也不会发起续播，网关这里不重复读偏好。
    */
   app.get<{
     Params: { platform: string };

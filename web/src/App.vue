@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import type { Platform } from '@/api/types';
+import { PLATFORM_LABEL, type Platform } from '@/api/types';
 import AppSidebar from '@/components/AppSidebar.vue';
 import AppTopbar from '@/components/AppTopbar.vue';
 import ConfirmHost from '@/components/ConfirmHost.vue';
@@ -10,10 +10,12 @@ import PlayerBar from '@/components/PlayerBar.vue';
 import QrBindDialog from '@/components/QrBindDialog.vue';
 import SakuraPetals from '@/components/SakuraPetals.vue';
 import ToastHost from '@/components/ToastHost.vue';
+import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
 import { useConnectStore } from '@/stores/connect';
 import { useCredentialStore } from '@/stores/credential';
 import { useLibraryStore } from '@/stores/library';
+import { usePlayerStore } from '@/stores/player';
 import { usePreferencesStore } from '@/stores/preferences';
 import { useRoomStore } from '@/stores/room';
 
@@ -22,17 +24,49 @@ const auth = useAuthStore();
 const connect = useConnectStore();
 const credentials = useCredentialStore();
 const library = useLibraryStore();
+const player = usePlayerStore();
 const preferences = usePreferencesStore();
 const room = useRoomStore();
+const toast = useToast();
 
 const bindPlatform = ref<Platform | null>(null);
 
 const bare = computed(() => Boolean(route.meta.bare));
 
+/**
+ * 平台开关对电台的硬约束。
+ *
+ * 首页卡片会跟着开关隐藏，但「正在播的电台」是后台流：光藏卡片，它仍会自己
+ * 向已关闭的平台续播，而用户也再找不到「退出电台」的出口；刷新后从本地存档
+ * 恢复的电台同样如此。所以除了隐藏 UI，还要在播放器里装一道判定，
+ * 并在开关变化 / 云端配置同步回来时立刻收掉电台。
+ */
+function stopDisabledRadio(): void {
+  const active = player.radio;
+  if (!active || preferences.isEnabled(active.platform, 'discover')) return;
+  const label = PLATFORM_LABEL[active.platform];
+  player.stopRadio();
+  toast.info(`${label}已在设置里关闭，私人电台已停止`);
+}
+
+player.setRadioPlatformGuard((platform) => preferences.isEnabled(platform, 'discover'));
+
+watch(
+  () => {
+    const active = player.radio;
+    return active ? preferences.isEnabled(active.platform, 'discover') : true;
+  },
+  (allowed) => {
+    if (!allowed) stopDisabledRadio();
+  },
+);
+
 onMounted(async () => {
   if (!auth.ready) await auth.initialize();
   // 平台开关先于搜索/首页生效：清单与云端配置都在这里就位。
   await preferences.bootstrap();
+  // 云端配置就位后再判一次：覆盖「刷新恢复的电台属于已关闭平台」。
+  stopDisabledRadio();
 });
 
 /**

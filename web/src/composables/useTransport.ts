@@ -1,6 +1,7 @@
-import type { Platform, UnifiedTrack } from '@/api/types';
+import { PLATFORM_LABEL, type Platform, type UnifiedTrack } from '@/api/types';
 import { useToast } from '@/composables/useToast';
 import { usePlayerStore, type PlayMode } from '@/stores/player';
+import { usePreferencesStore } from '@/stores/preferences';
 import { useRoomStore } from '@/stores/room';
 
 /**
@@ -18,6 +19,7 @@ import { useRoomStore } from '@/stores/room';
  */
 export function useTransport() {
   const player = usePlayerStore();
+  const preferences = usePreferencesStore();
   const room = useRoomStore();
   const toast = useToast();
 
@@ -46,12 +48,16 @@ export function useTransport() {
       else void player.playQueue(list, startIndex);
     },
     /**
-     * 开始私人电台：与「一起听」互斥，正在房间里（含旁观）直接拒绝。
+     * 开始私人电台：与「一起听」互斥，也跟着平台开关走（总开关 / 首页推荐能力）。
      * 首页已取回的那批会整批入队，点开时不额外请求。
      */
     startRadio: async (platform: Platform, initialTracks: UnifiedTrack[] = []): Promise<void> => {
       if (room.active) {
         toast.error('正在「一起听」中，请先退出再使用私人电台');
+        return;
+      }
+      if (!preferences.isEnabled(platform, 'discover')) {
+        toast.error(`${PLATFORM_LABEL[platform]}已在设置里关闭，启用后才能使用私人电台`);
         return;
       }
       await player.startRadio(platform, initialTracks);
