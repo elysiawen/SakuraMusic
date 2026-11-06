@@ -169,7 +169,7 @@ X-Sakura-Credential: <base64url(JSON)>
 | 时间 | 一律 ISO 8601 字符串（UTC），如 `2026-09-22T10:00:00.000Z` |
 | 分页 | `page` 从 **1** 开始；`limit` 有各自上限，越界会被夹到合法区间（不报错） |
 | 平台标识 | `netease`（网易云）/ `qq`（QQ 音乐），出现在很多字段里 |
-| 音质 | `standard` / `high` / `lossless` / `hires` / `spatial` / `master` / `surround`（标准 / 极高 / 无损 / Hi-Res / 高清臻音 / 超清母带 / 沉浸环绕声）。两家各只有其中几档：`hires` 只有网易云有；后三档两边都有，但都需要对应等级的会员，等级不够时自动降级 |
+| 音质 | `standard` / `high` / `lossless` / `hires` / `spatial` / `master` / `surround`。两家的叫法不同：QQ 是「标准品质 / HQ 高品质 / SQ 无损品质 / — / 臻品音质 / 臻品母带 4.0 / 臻品全景声」，网易云是「标准 / 极高 / 无损 / Hi-Res / 高清臻音 / 超清母带 / 沉浸环绕声」。两家各只有其中几档：`hires` 只有网易云有；后三档两边都有，但都需要对应等级的会员，等级不够时自动降级 |
 | CORS | 仅 `WEB_ORIGIN` 白名单内的来源可用，且 `Access-Control-Allow-Credentials: true`；允许的方法 `GET,POST,PATCH,DELETE,OPTIONS`，允许的请求头 `Content-Type, X-Sakura-Credential, Range` |
 | 404 | 未匹配到路由时返回 `{"error":{"code":"not_found","message":"接口不存在：GET /api/xxx"}}` |
 
@@ -1070,7 +1070,7 @@ POST /api/bind/commit →  提交「存服务器 / 仅本机」，完成绑定
 1. **不能直连上游音频地址**。两个平台的 CDN 都有 Referer 防盗链，浏览器/客户端直接请求会 `403`，必须经网关转发（网关会补 `Referer` 与 `User-Agent`）。
 2. **`<audio src>` 无法自定义请求头**，所以「仅本机」模式的凭据没法在流请求上传递。因此设计成：先用一次带鉴权的 `play/resolve` 把凭据**封装进自加密令牌**，后续流请求只凭令牌即可。
 3. **令牌有效期 10 分钟**，但 `resolve` 里解析出的上游地址有 **5 分钟**内存缓存（按 平台+歌曲+音质+凭据指纹 缓存），所以拖进度条不会反复打上游。
-4. **音质降级**：请求的音质不可用时，网关会自动逐级降低（如 `hires → lossless → exhigh → standard`，QQ 是 `file_type` 12/7/13 那条链），尽量让歌能放出来；网易云在全都无权限时才回退到试听片段并置 `trial: true`。「高清臻音 / 超清母带 / 沉浸环绕声」需要对应等级的会员，拿不到地址时会落到无损或 Hi-Res，不会直接失败。
+4. **音质降级**：请求的音质不可用时，网关会自动逐级降低（如 `hires → lossless → exhigh → standard`，QQ 是 `file_type` 12/7/13 那条链），尽量让歌能放出来；网易云在全都无权限时才回退到试听片段并置 `trial: true`。高级三档（`spatial` / `master` / `surround`，QQ 叫臻品音质 / 臻品母带 / 臻品全景声，网易云叫高清臻音 / 超清母带 / 沉浸环绕声）需要对应等级的会员，拿不到地址时会落到无损或 Hi-Res，不会直接失败。
 
 ---
 

@@ -333,7 +333,7 @@ export const usePlayerStore = defineStore('player', () => {
    *   2. 有这一档，但曲目是会员/付费资源（`vip`）→ 需要会员或购买；
    *   3. 有这一档、也不是 vip —— 平台这次没给（上游的临时限制）。
    *
-   * 档位名按平台取（`qualityLabel`），与选择器显示的名字保持同一套，别一个说「极高」一个说「高品」。
+   * 档位名按平台取（`qualityLabel`），与选择器显示的名字保持同一套，别一个说「HQ」一个说「极高」。
    * 音频本身的失败（网络、上游挂了）不走这里，那种由 `error` 负责。
    */
   const qualityNotice = computed(() => {

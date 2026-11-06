@@ -36,7 +36,8 @@ const activePlatforms = computed(() =>
   platforms.filter((platform) => preferences.isPlatformEnabled(platform)),
 );
 /*
- * 默认音质的候选。高级档（高清臻音 / 超清母带 / 沉浸环绕声）也要列出来：音质面板里选了它们就会写进
+ * 默认音质的候选。高级档（臻品音质 / 臻品母带 / 臻品全景声，网易云叫高清臻音 / 超清母带 /
+ * 沉浸环绕声）也要列出来：音质面板里选了它们就会写进
  * 这个偏好，设置页要是没有对应的芯片，用户会发现"面板里选了、这里却没有任何一个是选中的"。
  */
 const qualities: Quality[] = [
@@ -279,7 +280,7 @@ const REPO_URL = 'https://github.com/elysiawen/SakuraMusic';
             </button>
           </div>
           <span class="muted" style="font-size: 11px">
-            「高清臻音」「超清母带」「沉浸环绕声」各平台都有，但需要对应等级的会员；等级不够时会自动降级到能播的档位。
+            「臻品音质」「臻品母带」「臻品全景声」（网易云称高清臻音、超清母带、沉浸环绕声）需要对应等级的会员；等级不够时会自动降级到能播的档位。
           </span>
         </div>
 

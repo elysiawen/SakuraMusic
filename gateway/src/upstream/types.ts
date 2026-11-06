@@ -36,11 +36,11 @@ export interface TrackSource {
 /**
  * 音质档位（两个平台的并集，各家只有其中几档）。
  *
- *   standard / high / lossless  标准 / 极高 / 无损，两边都有；
+ *   standard / high / lossless  两边都有：QQ 叫「标准品质 / HQ 高品质 / SQ 无损品质」，
+ *                               网易云叫「标准 / 极高 / 无损」；
  *   hires                       Hi-Res，**只有网易云有**（QQ 的最高档直接是母带）；
- *   spatial / master / surround 高清臻音 / 超清母带 / 沉浸环绕声，两边都有但叫法不同：
- *                               QQ 是 ATMOS_2(臻品音质) / MASTER(臻品母带) / ATMOS_51(臻品全景声 5.1)，
- *                               网易云是 jyeffect / jymaster / sky。
+ *   spatial / master / surround 两边都有：QQ 是 ATMOS_2(臻品音质) / MASTER(臻品母带 4.0) /
+ *                               ATMOS_51(臻品全景声 5.1)，网易云是 jyeffect / jymaster / sky。
  *
  * 这几档都要对应等级的会员，等级不够时上游不给地址 —— 各平台的降级链会落到能播的档位。
  */

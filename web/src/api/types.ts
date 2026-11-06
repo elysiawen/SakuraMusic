@@ -291,9 +291,11 @@ export interface PlatformImportResult {
 /**
  * 音质档位（两个平台的并集，各家只有其中几档）。
  *
- *   standard / high / lossless  标准 / 极高 / 无损，两边都有；
+ *   standard / high / lossless  两边都有：QQ 叫「标准品质 / HQ 高品质 / SQ 无损品质」，
+ *                               网易云叫「标准 / 极高 / 无损」；
  *   hires                       Hi-Res，**只有网易云有**（QQ 的最高档直接是母带）；
- *   spatial / master / surround 高清臻音 / 超清母带 / 沉浸环绕声，两边都有、名字也一致，
+ *   spatial / master / surround 两边都有：QQ 叫「臻品音质 / 臻品母带 4.0 / 臻品全景声」，
+ *                               网易云叫「高清臻音 / 超清母带 / 沉浸环绕声」，
  *                               但都要对应等级的会员，等级不够时上游不给地址、自动降级。
  */
 export type Quality =
@@ -380,10 +382,10 @@ export const PLATFORM_COLOR: Record<Platform, string> = {
 };
 
 /**
- * 音质档位的通用叫法。
+ * 音质档位的通用叫法（网易云客户端的口径）。
  *
- * `high` 用「极高」而不是「高品」：这是 QQ 音乐与网易云客户端都在用的名字，
- * 统一它就省得出现「设置里叫极高、播放条面板里叫高品」这种同一档两个名。
+ * QQ 客户端用另一套名字（标准品质 / HQ 高品质 / SQ 无损品质 / 臻品母带 4.0 …），
+ * 由下面的 QQ_QUALITY_* 覆盖，见 `qualityMenuLabel` / `qualityLabel`。
  */
 export const QUALITY_LABEL: Record<Quality, string> = {
   standard: '标准',
@@ -396,24 +398,30 @@ export const QUALITY_LABEL: Record<Quality, string> = {
 };
 
 /*
- * QQ 音乐客户端的叫法，两张表成对出现：
- *   `MENU` 是音质面板里那一行的完整写法（带英文名/代号），`SHORT` 是芯片那种紧凑处的短名 ——
- *   客户端自己也是这么分的：面板写「超清母带 (Master)」，播放条那颗芯片只写「标准」。
+ * QQ 音乐客户端的叫法，口径对齐 QQ 音乐 20.x 的音质面板。两张表成对出现：
+ *   `MENU` 是音质面板里那一行的完整写法，`SHORT` 是芯片那种紧凑处的短名 ——
+ *   客户端自己也是这么分的：面板写「臻品母带 4.0」，播放条那颗芯片只写「臻品母带」。
+ *
+ * 注意后三档在 QQ 侧是「臻品」系列，和通用叫法指的是同一个 `Quality`：
+ *   spatial→臻品音质、master→臻品母带、surround→臻品全景声。
+ * 旧版/国际版客户端那套英文名（Master / Spatial Audio / Surround Audio）已经不用了。
  */
 const QQ_QUALITY_MENU: Partial<Record<Quality, string>> = {
-  high: '极高 (HQ)',
-  lossless: '无损 (SQ)',
-  spatial: '高清臻音 (Spatial Audio)',
-  master: '超清母带 (Master)',
-  surround: '沉浸环绕声 (Surround Audio)',
+  standard: '标准品质',
+  high: 'HQ 高品质',
+  lossless: 'SQ 无损品质',
+  spatial: '臻品音质',
+  master: '臻品母带 4.0',
+  surround: '臻品全景声',
 };
 
 const QQ_QUALITY_SHORT: Partial<Record<Quality, string>> = {
-  high: '极高',
-  lossless: '无损',
-  spatial: '高清臻音',
-  master: '超清母带',
-  surround: '沉浸环绕声',
+  standard: '标准',
+  high: 'HQ',
+  lossless: 'SQ',
+  spatial: '臻品音质',
+  master: '臻品母带',
+  surround: '臻品全景声',
 };
 
 /** 需要"对应等级会员"的高级档。降级提示与面板底部说明都要区别对待它们。 */
@@ -427,7 +435,7 @@ export function qualityMenuLabel(quality: Quality, platform?: Platform): string 
 
 /**
  * 紧凑处用的档位名：播放条那颗芯片、以及「这首歌没有「…」」这类提示语。
- * 芯片必须用短名，否则会被「高清臻音 (Spatial Audio)」这种完整名撑开。
+ * 芯片必须用短名，否则会被「臻品母带 4.0」「SQ 无损品质」这种完整名撑开。
  */
 export function qualityLabel(quality: Quality, platform?: Platform): string {
   if (platform === 'qq') return QQ_QUALITY_SHORT[quality] ?? QUALITY_LABEL[quality];

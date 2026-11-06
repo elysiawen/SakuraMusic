@@ -31,9 +31,9 @@ const BASE = config.qqBaseUrl;
  * 7 = FLAC(SQ 无损)、12 = MP3_320(HQ)、13 = MP3_128(标准)。
  * 每档附带降级链，避免无会员时整首歌播不出来。
  *
- * 后三档是 QQ 的高级档，客户端里的名字是「超清母带 (Master)」「高清臻音 (Spatial Audio)」
- * 「沉浸环绕声 (Surround Audio)」—— 官方档位名的对应关系是 臻品母带→超清母带、
- * 臻品音质→高清臻音、臻品全景声→沉浸环绕声（客户端那行的说明也是「最高 5.1 声道」）。
+ * 后三档是 QQ 的高级档，QQ 音乐 20.x 客户端里的名字是「臻品母带 4.0」「臻品音质」
+ * 「臻品全景声」—— 对应本项目的 `master` / `spatial` / `surround`（网易云那边这三档叫
+ * 「超清母带 / 高清臻音 / 沉浸环绕声」；客户端那行的说明也是「最高 5.1 声道」）。
  *
  * **这三档都要对应等级的会员**：实测同一个账号下它们一律回 `result=104003`（无权限），
  * 带上 `media_mid` / `song_type` 重试也是 104003 —— 是权限，不是请求方式。
@@ -45,11 +45,11 @@ export const QQ_FILE_TYPES: Record<string, { value: number; fallback: number[] }
   lossless: { value: 7, fallback: [12, 13] },
   /*
    * `master` 必须排在 `hires` 前面：两者都指向 file_type 1，而 `qqQualityOfFileType` 是顺序反查，
-   * 先命中的那个会被当作"实际拿到的档位"回报给前端 —— QQ 这边该显示的是「超清母带」。
+   * 先命中的那个会被当作"实际拿到的档位"回报给前端 —— QQ 这边该显示的是「臻品母带」。
    */
   master: { value: 1, fallback: [7, 12, 13] },
   // QQ 没有 Hi-Res 这一档，但音质偏好是全局的：用户在偏好里选了 Hi-Res 再听 QQ 的歌时，
-  // 按它的最高档（超清母带）处理，别因为查不到映射就掉到 128k。
+  // 按它的最高档（臻品母带）处理，别因为查不到映射就掉到 128k。
   hires: { value: 1, fallback: [7, 12, 13] },
   spatial: { value: 2, fallback: [7, 12, 13] },
   surround: { value: 3, fallback: [7, 12, 13] },
@@ -193,9 +193,9 @@ export function mapQqSong(input: unknown): UnifiedTrack | null {
  * 这首歌有哪些音质档位、各档多大 —— 看 `track.file` 里各档的文件大小，**非 0 就是有**。
  *
  * 字段含义以 SDK 的 `File` 模型为准（`modules/song.py` 的 `SongFileType` 逐个标了出处）：
- *   `size_128mp3` → 标准、`size_320mp3` → 极高 (HQ)、`size_flac` → 无损 (SQ)、
- *   `size_new[0]` → 臻品母带（超清母带 Master）、`size_new[1]` → 臻品音质（高清臻音）、
- *   `size_new[2]` → 臻品全景声 5.1（沉浸环绕声）。
+ *   `size_128mp3` → 标准品质、`size_320mp3` → HQ 高品质、`size_flac` → SQ 无损品质、
+ *   `size_new[0]` → 臻品母带 4.0（`master`）、`size_new[1]` → 臻品音质（`spatial`）、
+ *   `size_new[2]` → 臻品全景声 5.1（`surround`）。
  *
  * 另外几个下标**不是**对外档位，别顺手取：`size_new[3]` 是 OGG 版 320k、`[5]` 是 OGG 版无损
  * （同一档的另一种编码，取进来就重了）、`[4]` 是黑胶、`[6]` 是全景声 7.1、`[7]` 是 AICodec(.nac

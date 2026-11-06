@@ -81,14 +81,14 @@ watch(open, (isOpen) => {
   if (isOpen) placeMenu();
 });
 
-/** 当前这首歌来自哪个平台 —— 决定用哪套档位名字（QQ 客户端管 high 叫「极高 (HQ)」）。 */
+/** 当前这首歌来自哪个平台 —— 决定用哪套档位名字（QQ 客户端管 high 叫「HQ 高品质」）。 */
 const platform = computed(() => player.activeSource?.platform);
 
 /**
  * 芯片与对勾都表示**正在播的那一档**，不是偏好档位。
  *
  * 偏好（设置页里的"默认音质"）拿不到时会降级：这首歌没有这一档，或账号等级不够。
- * 那时照偏好显示就成了谎报 —— 写着「沉浸环绕声」其实在听「无损」，用户点完也看不到变化。
+ * 那时照偏好显示就成了谎报 —— 写着「臻品全景声」其实在听「无损」，用户点完也看不到变化。
  * 所以降级后芯片跟着实际档位走，为什么不是你要的那一档由面板里的提示行解释。
  * 还没开播（`actualQuality` 为空）时才退回偏好档位。
  */
@@ -107,7 +107,7 @@ const SPEC: Record<Quality, string> = {
 
 /**
  * 面板里的排列顺序：由低到高。
- * 沉浸环绕声排最后 —— 它是「空间音效」那一类（客户端把它单列一组放在最上面），我们不分组的
+ * surround 排最后 —— 它是「空间音效」那一类（客户端把它单列一组放在最上面），我们不分组的
  * 情况下放末尾比放开头更像"另一类"，而不是"最好的那一档"。
  */
 const ALL_QUALITIES: Quality[] = [
@@ -143,12 +143,15 @@ const options = computed(() => {
  *
  * 这首歌带高级档时就提醒等级要求 —— 那是用户"点了没反应"时最想知道的事；
  * 不带时只说明降级规则，不再重复"上面列的都是这首歌有的档位"这种看一眼就知道的话。
+ *
+ * 档位名按平台取：QQ 那边这三档叫「臻品音质 / 臻品母带 / 臻品全景声」。
  */
-const footerNote = computed(() =>
-  options.value.some((item) => PREMIUM_QUALITIES.includes(item.value))
-    ? '高清臻音、超清母带、沉浸环绕声需要对应等级的会员，不可用时自动降级'
-    : '不可用的档位会自动降级到能播的那一档',
-);
+const footerNote = computed(() => {
+  const premium = options.value.filter((item) => PREMIUM_QUALITIES.includes(item.value));
+  if (premium.length === 0) return '不可用的档位会自动降级到能播的那一档';
+  const names = premium.map((item) => qualityLabel(item.value, platform.value)).join('、');
+  return `${names}需要对应等级的会员，不可用时自动降级`;
+});
 
 /** 体积 · 规格。体积来自曲目自身（`qualitySizes`），客户端那栏也是这么写的。 */
 function hintOf(quality: Quality): string {
@@ -287,7 +290,7 @@ onBeforeUnmount(() => {
    */
   position: fixed;
   z-index: 45;
-  /* 兜底宽度（第一帧就位用）；实际宽度由 placeMenu 按屏幕算。246px 是为「沉浸环绕声 (Surround Audio)」留的。 */
+  /* 兜底宽度（第一帧就位用）；实际宽度由 placeMenu 按屏幕算。246px 是给最长的档位名留的余量。 */
   width: 246px;
   max-width: calc(100vw - 24px);
   padding: 6px;
