@@ -11,6 +11,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 会话失效回调由应用入口注入：api 层不反向依赖 router / store，避免循环引用。
+ * 只有 code 为 unauthorized 的 401 才算会话失效；登录密码错误、流地址令牌过期
+ * 等同样是 401 的响应，交给各自的调用方处理。
+ */
+let sessionExpiredHandler: (() => void) | null = null;
+
+export function setSessionExpiredHandler(handler: () => void): void {
+  sessionExpiredHandler = handler;
+}
+
 function toBase64Url(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let binary = '';
@@ -66,6 +77,14 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (!response.ok) {
     const code = payload?.error?.code ?? 'request_failed';
     const message = payload?.error?.message ?? `请求失败（${response.status}）`;
+    if (response.status === 401 && code === 'unauthorized') {
+      try {
+        sessionExpiredHandler?.();
+      } catch (handlerError) {
+        // 收尾逻辑出错也不能吞掉原始的接口错误。
+        console.warn('[sakura] 会话失效处理失败', handlerError);
+      }
+    }
     throw new ApiError(response.status, code, message);
   }
 

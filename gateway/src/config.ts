@@ -105,7 +105,10 @@ export const config = {
     .filter(Boolean),
   cookieSecure: readBool('COOKIE_SECURE', false),
   allowRegister: readBool('ALLOW_REGISTER', true),
-  sessionDays: readNumber('SESSION_DAYS', 30),
+  /** 会话滑动窗口（天）：活跃请求把有效期续满该时长，长期不活动才过期。 */
+  sessionDays: Math.max(1, readNumber('SESSION_DAYS', 30)),
+  /** 会话绝对寿命上限（天，从登录起算）；0 表示不限制，用于避免无限滑动。 */
+  sessionMaxDays: Math.max(0, readNumber('SESSION_MAX_DAYS', 0)),
   upstreamTimeoutMs: readNumber('UPSTREAM_TIMEOUT_MS', 15000),
   dataDir,
 } as const;

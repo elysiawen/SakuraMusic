@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { requireUser } from '../services/users';
+import { requireUser, skipSessionRenewal } from '../services/users';
 import { attachDevice, sendCommand, updateState } from '../services/connect';
 
 /**
@@ -14,6 +14,9 @@ export async function registerConnectRoutes(app: FastifyInstance): Promise<void>
   app.get<{ Querystring: { deviceId?: string; name?: string; kind?: string } }>(
     '/api/connect/events',
     async (request, reply) => {
+      // 这条连接会 hijack 响应，Set-Cookie 发不出去，因此不参与滑动续期；
+      // 交给后续普通请求续期，避免「库里延长了、浏览器 Cookie 没延长」。
+      skipSessionRenewal(request);
       // 鉴权要在 hijack 之前完成——一旦接管响应，就再也发不出 401 了。
       const user = await requireUser(request);
       attachDevice(reply, user.id, {

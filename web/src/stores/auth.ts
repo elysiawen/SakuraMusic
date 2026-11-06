@@ -60,6 +60,16 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
+   * 会话在服务端已失效（过期 / 被吊销）时的收尾：只清认证态。
+   * 与 clearSession 不同，这里保留播放器队列和「仅本机」凭据——用户马上会重新登录，
+   * 不该因为一次过期就丢掉队列和本地密钥。App.vue 会据此断开设备长连接。
+   */
+  function expireSession(): void {
+    user.value = null;
+    stats.value = null;
+  }
+
+  /**
    * 清空本地的登录态与相关残留（播放器、仅本机凭据）。
    * 退出登录与删除账户两条路径共用，避免两边各写一份、慢慢长歪。
    */
@@ -114,6 +124,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     initialize,
     refreshSocialCounts,
+    expireSession,
     login,
     register,
     logout,

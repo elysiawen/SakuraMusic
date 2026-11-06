@@ -13,6 +13,7 @@ import { registerRoomRoutes } from './routes/rooms';
 import { registerStreamRoutes } from './routes/stream';
 import { setDeviceLifecycleHooks } from './services/connect';
 import { onDeviceOffline, onDeviceOnline } from './services/rooms';
+import { bindSessionReply } from './services/users';
 
 /** 允许携带 Cookie 的跨域来源白名单（开发环境为 Vite dev server）。 */
 function applyCors(app: FastifyInstance): void {
@@ -43,6 +44,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(cookie);
+
+  // 滑动续期需要在路由处理阶段回写 Set-Cookie，先把 Reply 绑定到请求上。
+  app.addHook('onRequest', async (request, reply) => {
+    bindSessionReply(request, reply);
+  });
+
   applyCors(app);
 
   /**

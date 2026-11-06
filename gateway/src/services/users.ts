@@ -51,9 +51,75 @@ function assertPassword(password: string): void {
 }
 
 const userCache = new WeakMap<FastifyRequest, UserRow | null>();
+/** 把 Reply 绑定到请求，鉴权时就地回写续期后的会话 Cookie。 */
+const sessionReplies = new WeakMap<FastifyRequest, FastifyReply>();
+/** 响应会被 hijack 的请求发不出 Set-Cookie，不参与续期。 */
+const nonRenewableRequests = new WeakSet<FastifyRequest>();
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SESSION_WINDOW_MS = config.sessionDays * DAY_MS;
+const SESSION_MAX_MS = config.sessionMaxDays * DAY_MS;
+
+export function bindSessionReply(request: FastifyRequest, reply: FastifyReply): void {
+  sessionReplies.set(request, reply);
+}
+
+/** 标记该请求会接管响应（如 SSE），跳过滑动续期。 */
+export function skipSessionRenewal(request: FastifyRequest): void {
+  nonRenewableRequests.add(request);
+}
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+interface SessionRow extends UserRow {
+  session_expires_at: Date | string;
+  session_created_at: Date | string;
+}
+
+/** 到期时间 = 本次活跃往后推一个滑动窗口，且不超过绝对上限。 */
+function sessionExpiry(createdAt: Date, now: number): Date {
+  const sliding = now + SESSION_WINDOW_MS;
+  return new Date(SESSION_MAX_MS > 0 ? Math.min(sliding, createdAt.getTime() + SESSION_MAX_MS) : sliding);
+}
+
+/** 绝对上限优先：即使库里的 expires_at 还没到（例如改配置前的老会话），也不再认可。 */
+function exceedsMaxAge(createdAt: Date, now: number): boolean {
+  return SESSION_MAX_MS > 0 && now >= createdAt.getTime() + SESSION_MAX_MS;
+}
+
+/** 只在剩余寿命不足半个窗口时续期，避免每个请求都写库。 */
+function nextSessionExpiry(expiresAt: Date, createdAt: Date, now: number): Date | null {
+  if (expiresAt.getTime() - now > SESSION_WINDOW_MS / 2) return null;
+  const next = sessionExpiry(createdAt, now);
+  return next.getTime() > expiresAt.getTime() ? next : null;
+}
+
+/** 滑动续期：同时延长数据库里的 expires_at 与浏览器 Cookie 的 expires。 */
+async function renewSession(request: FastifyRequest, token: string, row: SessionRow): Promise<void> {
+  // 拿不到 Reply 或响应会被 hijack 时不续期，否则会出现「库里延长了、浏览器却没延长」。
+  const reply = sessionReplies.get(request);
+  if (!reply || nonRenewableRequests.has(request)) return;
+
+  const expiresAt = new Date(row.session_expires_at);
+  const createdAt = new Date(row.session_created_at);
+  const next = nextSessionExpiry(expiresAt, createdAt, Date.now());
+  if (!next) return;
+
+  try {
+    const updated = await execute(
+      `update sessions set expires_at = $2
+        where token_hash = $1 and expires_at > now()`,
+      [hashToken(token), next],
+    );
+    // 会话可能刚被登出 / 改密吊销，此时不要回写 Cookie。
+    if (updated === 0) return;
+    writeSessionCookie(reply, token, next);
+  } catch (error) {
+    // 续期失败不影响本次请求，会话仍按原到期时间可用。
+    request.log.warn({ err: error }, '会话滑动续期失败，本次请求按原有效期处理');
+  }
 }
 
 /** 解析当前请求的登录态；结果按请求缓存，避免同一次请求内重复查库。 */
@@ -63,12 +129,19 @@ export async function currentUser(request: FastifyRequest): Promise<UserRow | nu
   const token = request.cookies[SESSION_COOKIE];
   let user: UserRow | null = null;
   if (token) {
-    user = await one<UserRow>(
-      `select u.* from sessions s
+    const row = await one<SessionRow>(
+      `select u.*,
+              s.expires_at as session_expires_at,
+              s.created_at as session_created_at
+         from sessions s
          join users u on u.id = s.user_id
         where s.token_hash = $1 and s.expires_at > now()`,
       [hashToken(token)],
     );
+    if (row && !exceedsMaxAge(new Date(row.session_created_at), Date.now())) {
+      user = row;
+      await renewSession(request, token, row);
+    }
   }
   userCache.set(request, user);
   return user;
@@ -143,7 +216,8 @@ export async function login(
 
 async function createSession(request: FastifyRequest, reply: FastifyReply, userId: string): Promise<void> {
   const token = randomBytes(32).toString('base64url');
-  const expiresAt = new Date(Date.now() + config.sessionDays * 24 * 60 * 60 * 1000);
+  const now = Date.now();
+  const expiresAt = sessionExpiry(new Date(now), now);
   await execute(
     `insert into sessions (user_id, token_hash, user_agent, expires_at) values ($1, $2, $3, $4)`,
     [userId, hashToken(token), String(request.headers['user-agent'] ?? '').slice(0, 255), expiresAt],

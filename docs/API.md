@@ -109,9 +109,21 @@
 | SameSite | `Lax` |
 | HttpOnly | 是 |
 | Secure | 由 `COOKIE_SECURE` 决定（默认关闭） |
-| 有效期 | `SESSION_DAYS`，默认 30 天 |
+| 有效期 | 滑动续期，窗口 `SESSION_DAYS`（默认 30 天），上限 `SESSION_MAX_DAYS`（默认不限制） |
 
 客户端只需像浏览器一样保存并回传 Cookie 即可。登录 / 注册成功时由 `Set-Cookie` 下发。
+
+**滑动续期**：每次需要鉴权的请求都会检查会话剩余寿命，不足窗口一半时，服务端把
+`sessions.expires_at` 续满 `SESSION_DAYS` 并同步用 `Set-Cookie` 延长 Cookie 的 `expires`。
+「过半才续」是为了避免每个请求都写库。持续活跃会不断续期，长期不活动则最迟
+`SESSION_DAYS` 天后过期。
+若配置了 `SESSION_MAX_DAYS`，会话从登录起算最多存活该天数，到顶后不再续期，必须重新登录。
+续期对前端透明；`/api/stream` 等公开接口、以及 `/api/connect/events` 这类接管响应的长连接不触发续期。
+
+**会话失效**：Web 端在 `apiRequest` 中统一处理 `401 + code=unauthorized`——清空认证态、
+断开设备长连接，并带当前地址跳 `/login?redirect=…`，重新登录后原路返回。
+其它 401 不算会话失效：`invalid_credentials`（密码错误）由登录页提示，
+`stream_token_invalid`（播放地址过期）由播放逻辑自行处理。
 
 ### 1.2 「仅本机」凭据透传（重要）
 
@@ -1145,6 +1157,7 @@ GET  /api/track/:platform/:id/lyric   （可选，歌词）
 | `WEB_ORIGIN` | `http://localhost:5173` | CORS 白名单，逗号分隔多个 |
 | `COOKIE_SECURE` | `false` | 置 `true` 时会话 Cookie 带 `Secure`（HTTPS 部署时必须开） |
 | `ALLOW_REGISTER` | `true` | 是否允许注册 |
-| `SESSION_DAYS` | `30` | 会话有效期（天） |
+| `SESSION_DAYS` | `30` | 会话滑动窗口（天），活跃请求把有效期续满该时长 |
+| `SESSION_MAX_DAYS` | `0` | 会话绝对寿命上限（天，从登录算起）；`0` 表示不限制 |
 | `UPSTREAM_TIMEOUT_MS` | `15000` | 上游请求超时 |
 | `LOG_LEVEL` | `info` | 日志级别 |
