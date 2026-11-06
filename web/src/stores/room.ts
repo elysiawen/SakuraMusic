@@ -374,6 +374,7 @@ export const useRoomStore = defineStore('room', () => {
   function setQueue(list: UnifiedTrack[], startIndex = 0): void {
     void act('setQueue', { queue: list, index: startIndex });
   }
+
   /**
    * 改播放模式（**房间共享**，两端一起变）。
    *
@@ -810,6 +811,18 @@ export const useRoomStore = defineStore('room', () => {
       return;
     }
 
+    /*
+     * 私人电台与一起听互斥：服务端把本机拉进房间（含旁观）时，电台自动结束。
+     *
+     * 这条路径不经过 create/join/reclaim —— 同一账号的另一台设备刚进房间，
+     * 第一帧快照会直接推到这里，UI 层拦不住。只在「刚进房间」时处理，
+     * 后续每次快照都触发会反复弹提示。
+     */
+    if (!code.value && radioActive()) {
+      usePlayerStore().stopRadio();
+      toast.info('已进入「一起听」，私人电台已停止', 6000);
+    }
+
     code.value = room.code;
     writeStoredRoom(room.code, mySeat !== null);
     kind.value = room.kind;
@@ -957,13 +970,21 @@ export const useRoomStore = defineStore('room', () => {
         quality: item.quality as Quality | undefined,
       };
     });
-    player.setEndHandler(() => {
-      if (!active.value) return false;
-      const track = playback.value?.track;
-      if (!track || track.key !== player.current?.key) return false;
-      void act('ended', { trackKey: track.key }, true);
-      return true;
-    });
+    player.setEndHandler(
+      () => {
+        if (!active.value) return false;
+        const track = playback.value?.track;
+        if (!track || track.key !== player.current?.key) return false;
+        void act('ended', { trackKey: track.key }, true);
+        return true;
+      },
+      /*
+       * 这个 handler 登录后就无条件装上了，**存在 ≠ 房间接管了本机播放**。
+       * 把「是否接管」单独传给播放器：只有房间席位为真时才挡住本机电台续播，
+       * 旁观设备照样用自己的播放器。少了这个判定，本机电台会永远续不了歌。
+       */
+      () => seatActive.value,
+    );
 
     /*
      * 刷新页面后自动回房。
@@ -975,6 +996,11 @@ export const useRoomStore = defineStore('room', () => {
      */
     const stored = readStoredRoom();
     if (stored) {
+      /*
+       * 电台播放中：本次不自动回房（静默，用户没主动点一起听，不该弹提示）。
+       * 房间码仍留在 localStorage，退出电台后下次刷新照样能回去。
+       */
+      if (radioActive()) return;
       pendingCode = stored.code;
       // 界面立刻能显示「在房间里」；真正的身份（本机放 or 旁观）等对账结果。
       code.value = stored.code;
@@ -1022,6 +1048,8 @@ export const useRoomStore = defineStore('room', () => {
    */
   async function reconcile(): Promise<void> {
     if (joining) return;
+    // 自动对账会反复触发（每次 hello）：静默跳过，别一遍遍弹提示。
+    if (radioActive()) return;
 
     /*
      * 已经在房间里、而且**本机确实是席位设备**（断线重连）：直接接回来。
@@ -1069,6 +1097,8 @@ export const useRoomStore = defineStore('room', () => {
   async function reclaim(roomCode?: string): Promise<void> {
     const target = roomCode ?? code.value;
     if (!target || joining) return;
+    // 刷新自动回房、设备转移（takeSeat → transfer）都会落到这里。
+    if (radioBlocksRoom()) return;
     const connect = useConnectStore();
     const player = usePlayerStore();
     joining = true;
@@ -1129,6 +1159,20 @@ export const useRoomStore = defineStore('room', () => {
     return false;
   }
 
+  /* -------------------- 与私人电台互斥 -------------------- */
+
+  /** 本机是否正在听私人电台。 */
+  function radioActive(): boolean {
+    return Boolean(usePlayerStore().radio);
+  }
+
+  /** 拦下「进入房间」的动作，并说明原因。 */
+  function radioBlocksRoom(): boolean {
+    if (!radioActive()) return false;
+    toast.error('正在播放私人电台，请先退出电台再使用「一起听」');
+    return true;
+  }
+
   /**
    * 创建房间。
    *
@@ -1136,6 +1180,7 @@ export const useRoomStore = defineStore('room', () => {
    * 以及房间类型（缺省 `duo`；`group` 服务端尚未开放，会返回 `room_kind_unsupported`）。
    */
   async function create(seed?: UnifiedTrack[], roomKind: RoomKind = 'duo'): Promise<void> {
+    if (radioBlocksRoom()) return;
     const connect = useConnectStore();
     const player = usePlayerStore();
     // 用户明确要开一个新的：之前记着的那个房间码不再管。
@@ -1164,6 +1209,7 @@ export const useRoomStore = defineStore('room', () => {
   }
 
   async function join(roomCode: string): Promise<void> {
+    if (radioBlocksRoom()) return;
     const connect = useConnectStore();
     const player = usePlayerStore();
     const normalized = roomCode.trim().toUpperCase();

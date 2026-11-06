@@ -1,4 +1,5 @@
-import type { UnifiedTrack } from '@/api/types';
+import type { Platform, UnifiedTrack } from '@/api/types';
+import { useToast } from '@/composables/useToast';
 import { usePlayerStore, type PlayMode } from '@/stores/player';
 import { useRoomStore } from '@/stores/room';
 
@@ -18,6 +19,7 @@ import { useRoomStore } from '@/stores/room';
 export function useTransport() {
   const player = usePlayerStore();
   const room = useRoomStore();
+  const toast = useToast();
 
   return {
     toggle: (): void => (room.seatActive ? room.toggle() : player.toggle()),
@@ -42,6 +44,17 @@ export function useTransport() {
     playList: (list: UnifiedTrack[], startIndex = 0): void => {
       if (room.seatActive) room.setQueue(list, startIndex);
       else void player.playQueue(list, startIndex);
+    },
+    /**
+     * 开始私人电台：与「一起听」互斥，正在房间里（含旁观）直接拒绝。
+     * 首页已取回的那批会整批入队，点开时不额外请求。
+     */
+    startRadio: async (platform: Platform, initialTracks: UnifiedTrack[] = []): Promise<void> => {
+      if (room.active) {
+        toast.error('正在「一起听」中，请先退出再使用私人电台');
+        return;
+      }
+      await player.startRadio(platform, initialTracks);
     },
     /** 播放单曲：房间里 = 点歌并播放，否则按本机语义播放（可带整张列表）。 */
     playTrack: (track: UnifiedTrack, list?: UnifiedTrack[]): void => {

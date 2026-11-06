@@ -4,6 +4,7 @@ import { isPlatform, type Platform } from '../upstream/types';
 import { platformManifest } from '../platforms/registry';
 import * as catalog from '../services/catalog';
 import { resolveCookie } from '../services/credentials';
+import { loadRadioBatch } from '../services/radio';
 import { createStreamUrl, probeStream } from '../services/stream';
 import { requireUser } from '../services/users';
 
@@ -122,6 +123,29 @@ export async function registerMusicRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: { platforms?: string } }>('/api/discover/feed', async (request) => {
     const user = await requireUser(request);
     return catalog.discoverFeed(request, user.id, request.query.platforms);
+  });
+
+  /**
+   * 电台续播：一次拿一批「没推过」的个性化曲目。
+   *
+   * `session` 是上次返回的会话号（首次不传）；`exclude` 是当前队列里的 `track.key`，
+   * 逗号分隔，用来在会话丢失/换设备时接上去重；`limit` 默认 6、上限 10
+   * （上游电台一批也就 3~5 首，这里只是个上限，不会为凑数反复打上游）。
+   * 与发现页不同，这里不受「首页推荐」开关影响 —— 电台是用户主动点开的，和播放一样。
+   */
+  app.get<{
+    Params: { platform: string };
+    Querystring: { session?: string; limit?: string; exclude?: string };
+  }>('/api/radio/:platform', async (request) => {
+    const user = await requireUser(request);
+    const platform = assertPlatform(request.params.platform);
+    const limit = Math.min(10, Math.max(1, Number(request.query.limit ?? 6) || 6));
+    const exclude = String(request.query.exclude ?? '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 200);
+    return loadRadioBatch(request, user.id, platform, request.query.session, limit, exclude);
   });
 
   app.get<{ Querystring: { platform?: string } }>('/api/toplists', async (request) => {

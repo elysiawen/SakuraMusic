@@ -214,6 +214,23 @@ export interface UpstreamOutcome<T> {
   error?: string;
 }
 
+/**
+ * 电台会话里「已经推过的一首歌」的原始标识。
+ *
+ * 只传平台原生的 ID，不传聚合后的展示模型：QQ 的电台接口要的是数字 song id
+ * （`song_ids`），网易云暂时没有这个入参，留着给两边统一的去重上下文用。
+ */
+export interface RadioExclude {
+  id: string;
+  numericId?: string;
+}
+
+/** 一次电台批次的请求参数：想凑几首、已经推过哪些。 */
+export interface RadioBatchOptions {
+  limit: number;
+  exclude: RadioExclude[];
+}
+
 export function trackKey(platform: Platform, id: string): string {
   return `${platform}:${id}`;
 }

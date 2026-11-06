@@ -19,6 +19,7 @@ import type {
   PlatformAlbum,
   PlatformArtist,
   Quality,
+  RadioBatchOptions,
   UnifiedTrack,
 } from './types';
 import { trackKey } from './types';
@@ -609,12 +610,69 @@ export async function recommendSongs(cookie: string | null): Promise<UnifiedTrac
     .filter((item): item is UnifiedTrack => item !== null);
 }
 
-/** 私人 FM（需要登录）。 */
-export async function personalFm(cookie: string | null): Promise<UnifiedTrack[]> {
-  const body = unwrap(await upstreamJson<RawResponse>('/personal_fm', { cookie }));
+/** `/api/v1/radio/get` 的两个端点都是这个形状：`data` 里直接放曲目数组。 */
+function fmTracks(body: Record<string, any>): UnifiedTrack[] {
   return asArr(body.data)
     .map((song) => mapNeteaseSong(song))
     .filter((item): item is UnifiedTrack => item !== null);
+}
+
+/** 私人 FM（需要登录）：首页板块用，固定 3 首、照旧走上游那层响应缓存。 */
+export async function personalFm(cookie: string | null): Promise<UnifiedTrack[]> {
+  const body = unwrap(await upstreamJson<RawResponse>('/personal_fm', { cookie }));
+  return fmTracks(body);
+}
+
+/**
+ * 电台续播的一批：同一个 `/api/v1/radio/get`，但带上 `limit` 并**绕过上游缓存**。
+ *
+ * SDK 的 `personal_fm()` 连 data 都不发，服务端按默认给 3 首；`personal_fm_mode()`
+ * 会带上 `limit`，所以优先走它（一次要够就少打几轮上游）。
+ * `x-apicache-bypass` 是旧上游 apicache 自带、自建上游也保留的开关 —— 不绕开那
+ * 2 分钟缓存，连着拉几批只会拿回同一批 3 首。
+ *
+ * `exclude` 网易云这边没有对应的入参（服务端自己滚动推荐），去重由网关的电台会话统一做。
+ * 老版上游没有 `/personal_fm/mode` 时回退到固定 3 首，功能不至于整块失效。
+ */
+/**
+ * 上游是否真的支持 `/personal_fm/mode`：试一次就记住结论。
+ * 旧版上游没有这个端点（404）、或服务端不接受缺 `mode` 的请求时，后续每批都别再
+ * 先白打一次 —— 电台续播本来就是高频调用，多一次无效请求就多一点风控风险。
+ */
+let fmModeAvailable: boolean | null = null;
+
+export async function radioBatch(
+  cookie: string | null,
+  options: RadioBatchOptions,
+): Promise<UnifiedTrack[]> {
+  const headers = { 'x-apicache-bypass': '1' };
+  if (fmModeAvailable !== false) {
+    try {
+      const body = unwrap(
+        await upstreamJson<RawResponse>('/personal_fm/mode', {
+          cookie,
+          headers,
+          /*
+           * `personal_fm_mode.js` 里的 `createOption(query)` 没像 `personal_fm.js`
+           * 那样写死 'weapi'，而 `/api/v1/radio/get` 需要它。createOption 允许
+           * `query.crypto` 覆盖默认值，所以从这里把这个开关补上。
+           */
+          query: { limit: options.limit, crypto: 'weapi' },
+        }),
+      );
+      const items = fmTracks(body);
+      if (items.length > 0) {
+        fmModeAvailable = true;
+        return items;
+      }
+      fmModeAvailable = false;
+    } catch {
+      fmModeAvailable = false;
+    }
+  }
+  // 固定 3 首的那个端点：网关的电台服务会串行多拉几批把它们攒起来。
+  const body = unwrap(await upstreamJson<RawResponse>('/personal_fm', { cookie, headers }));
+  return fmTracks(body);
 }
 
 export async function loginProfile(cookie: string | null): Promise<AccountProfile> {

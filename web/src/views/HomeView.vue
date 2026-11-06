@@ -17,10 +17,17 @@ let cachedSignature = '';
 import { computed, onMounted, ref, watch } from 'vue';
 import { musicApi } from '@/api';
 // DiscoverFeed 已在上面的普通 <script> 块里导入（两块共享同一模块作用域）
-import { PLATFORM_LABEL, type PlaylistSummary, type UnifiedTrack } from '@/api/types';
+import {
+  PLATFORM_LABEL,
+  PLATFORMS,
+  type Platform,
+  type PlaylistSummary,
+  type UnifiedTrack,
+} from '@/api/types';
 import AppIcon from '@/components/AppIcon.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import PlaylistCard from '@/components/PlaylistCard.vue';
+import RadioCard from '@/components/RadioCard.vue';
 import TrackRail from '@/components/TrackRail.vue';
 import { useToast } from '@/composables/useToast';
 import { useAuthStore } from '@/stores/auth';
@@ -35,12 +42,39 @@ const toast = useToast();
 const feed = ref<DiscoverFeed | null>(null);
 const loading = ref(true);
 
+/**
+ * 电台板块不再走横向轨道，改成顶部并排的两张大卡片。
+ * 卡片只把第一首画成封面，但整批（网易云 3 首 / QQ 5 首）会原样入队按顺序放完；
+ * 最后一首开始播时才去补下一小批 —— 不会一次打一堆请求去凑数。
+ */
+const RADIO_SECTION_BY_PLATFORM: Record<Platform, string> = {
+  netease: 'netease-fm',
+  qq: 'qq-guess',
+};
+const RADIO_SECTION_KEYS = new Set(Object.values(RADIO_SECTION_BY_PLATFORM));
+
+/** 其余的曲目板块继续用轨道展示。 */
 const trackSections = computed(() =>
-  (feed.value?.sections ?? []).filter((section) => section.kind === 'tracks'),
+  (feed.value?.sections ?? []).filter(
+    (section) => section.kind === 'tracks' && !RADIO_SECTION_KEYS.has(section.key),
+  ),
 );
 
 const collectionSections = computed(() =>
   (feed.value?.sections ?? []).filter((section) => section.kind !== 'tracks'),
+);
+
+/**
+ * 两张卡片**固定按平台渲染**：电台和播放一样不受「首页推荐」开关影响，
+ * 没绑定账号时对应板块会缺失（只有占位封面），但入口依然在，点了会说明原因。
+ */
+const radioCards = computed(() =>
+  PLATFORMS.map((platform) => ({
+    platform,
+    section: (feed.value?.sections ?? []).find(
+      (item) => item.key === RADIO_SECTION_BY_PLATFORM[platform] && item.kind === 'tracks',
+    ),
+  })),
 );
 
 const greeting = computed(() => {
@@ -120,6 +154,15 @@ onMounted(() => {
       <RouterLink class="btn btn-primary" :to="{ name: 'account' }">去账户中心绑定</RouterLink>
     </section>
 
+    <div class="radio-grid">
+      <RadioCard
+        v-for="card in radioCards"
+        :key="card.platform"
+        :platform="card.platform"
+        :section="card.section"
+      />
+    </div>
+
     <div v-if="feed && feed.errors.length > 0" class="notice glass" style="border-color: rgba(224, 69, 58, 0.28)">
       <AppIcon name="refresh" :size="18" />
       <div class="stack" style="gap: 2px; flex: 1">
@@ -186,6 +229,20 @@ onMounted(() => {
   padding: 14px 18px;
   margin-bottom: 20px;
   border-radius: var(--radius);
+}
+
+.radio-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 26px;
+}
+
+@media (max-width: 760px) {
+  .radio-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
 }
 
 .skeleton {

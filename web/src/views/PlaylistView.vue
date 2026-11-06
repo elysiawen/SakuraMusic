@@ -26,6 +26,8 @@ const toast = useToast();
 const confirm = useConfirm();
 /** 播放全部：在房间里 = 把这个歌单换成一起听队列。 */
 const transport = useTransport();
+/** 私人电台与一起听互斥。 */
+const radioActive = computed(() => Boolean(player.radio));
 
 const playlist = ref<Playlist | null>(null);
 const tracks = ref<UnifiedTrack[]>([]);
@@ -100,6 +102,10 @@ async function load(): Promise<void> {
 /** 用「一起听」播放这个歌单：已在房间里就换歌单，否则以它为初始队列开一个房间。*/
 async function startTogether(): Promise<void> {
   if (sortedTracks.value.length === 0) return;
+  if (radioActive.value) {
+    toast.error('正在播放私人电台，请先退出电台再使用「一起听」');
+    return;
+  }
   if (room.seatActive) room.setQueue(sortedTracks.value);
   else await room.create(sortedTracks.value);
 }
@@ -182,7 +188,13 @@ void formatDuration;
               <AppIcon name="play" :size="14" filled />
               播放全部
             </button>
-            <button class="btn" type="button" :disabled="tracks.length === 0" @click="startTogether">
+            <button
+              class="btn"
+              type="button"
+              :disabled="tracks.length === 0 || radioActive"
+              :title="radioActive ? '正在播放私人电台，请先退出电台' : undefined"
+              @click="startTogether"
+            >
               <AppIcon name="users" :size="14" />
               {{ room.seatActive ? '设为一起听队列' : '一起听播放' }}
             </button>

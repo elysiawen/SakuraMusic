@@ -15,6 +15,7 @@ import type {
   PlatformImportResult,
   QqLoginType,
   Quality,
+  RadioBatch,
   SakuraUser,
   PlatformManifest,
   PreferenceEntry,
@@ -97,6 +98,19 @@ export const musicApi = {
     }),
   discoverFeed: (platforms?: string) =>
     apiRequest<DiscoverFeed>('/api/discover/feed', { query: { platforms } }),
+  /**
+   * 电台续播：`session` 为空表示新开一个电台，`exclude` 是当前队列的 track.key。
+   * 上游一次给 3~5 首，网关只做去重、不再攒批，所以这里就是一小批，
+   * 快听完时再要下一批。
+   */
+  radio: (platform: Platform, session?: string, limit = 6, exclude: string[] = []) =>
+    apiRequest<RadioBatch>(`/api/radio/${platform}`, {
+      query: {
+        session,
+        limit,
+        exclude: exclude.slice(-60).join(','),
+      },
+    }),
   toplists: (platform: Platform) =>
     apiRequest<{ items: PlaylistSummary[] }>('/api/toplists', { query: { platform } }),
   toplist: (platform: Platform, id: string, page = 1, limit = 100) =>

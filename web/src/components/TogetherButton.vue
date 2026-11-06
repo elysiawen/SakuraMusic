@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { usePlayerStore } from '@/stores/player';
 import { useRoomStore } from '@/stores/room';
 import AppIcon from './AppIcon.vue';
 import TogetherPanel from './TogetherPanel.vue';
@@ -14,6 +15,9 @@ const props = withDefaults(defineProps<{ placement?: 'up' | 'down'; size?: numbe
 });
 
 const room = useRoomStore();
+const player = usePlayerStore();
+/** 私人电台与一起听互斥：电台播放中入口不可用。 */
+const radioActive = computed(() => Boolean(player.radio));
 const open = ref(false);
 const wrapRef = ref<HTMLElement | null>(null);
 
@@ -23,6 +27,7 @@ const wrapRef = ref<HTMLElement | null>(null);
  * 旁观（同账号的另一台在放）单独说一句：不点开面板也该看得出「本机没在放」。
  */
 const buttonHint = computed(() => {
+  if (radioActive.value) return '一起听 · 私人电台播放中，请先退出电台';
   if (!room.active) return '一起听';
   if (room.spectating) return '一起听 · 在另一台设备上播放';
   return room.isDuo ? '一起听 · 双人（进行中）' : '一起听 · 多人（进行中）';
@@ -48,7 +53,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       class="icon-btn"
       type="button"
       :title="buttonHint"
-      :class="{ 'is-active': open || room.active }"
+      :disabled="radioActive"
+      :class="{ 'is-active': open || room.active, 'is-blocked': radioActive }"
       @click="open = !open"
     >
       <AppIcon name="users" :size="props.size" />
@@ -73,6 +79,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   position: relative;
   display: flex;
   align-items: center;
+}
+
+/* 私人电台播放中：入口明确置灰，鼠标悬停用 title 说明原因。 */
+.icon-btn.is-blocked {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .together-dot {

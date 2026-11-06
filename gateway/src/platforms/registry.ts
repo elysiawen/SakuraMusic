@@ -9,6 +9,7 @@ import type {
   PlatformAlbum,
   PlatformArtist,
   PlaylistSummary,
+  RadioBatchOptions,
   UnifiedTrack,
 } from '../upstream/types';
 import { isPlatform, PLATFORM_LABEL, PLATFORMS, type Platform } from '../upstream/types';
@@ -98,6 +99,12 @@ export interface PlatformAdapter {
   ): Promise<PlaylistSummary[]>;
   trackDetail(id: string, cookie: string | null): Promise<UnifiedTrack | null>;
   lyric(id: string, cookie: string | null): Promise<LyricResult>;
+  /**
+   * 电台续播：一次向上游要一批个性化推荐曲目。
+   * 与 `feedSources` 里那些「首页板块」不同，它必须能反复调用且每次给新歌，
+   * 所以两个适配器各自负责绕过上游缓存、带上已听上下文。
+   */
+  radioBatch(cookie: string | null, options: RadioBatchOptions): Promise<UnifiedTrack[]>;
   artistBundle(id: string, cookie: string | null): Promise<ArtistBundle>;
   albumBundle(id: string, cookie: string | null): Promise<AlbumBundle>;
   toplists(cookie: string | null): Promise<PlaylistSummary[]>;
@@ -131,6 +138,7 @@ const neteaseAdapter: PlatformAdapter = {
     netease.searchPlaylists(keyword, page, limit, cookie),
   trackDetail: (id, cookie) => netease.trackDetail(id, cookie),
   lyric: (id, cookie) => netease.lyric(id, cookie),
+  radioBatch: (cookie, options) => netease.radioBatch(cookie, options),
   artistBundle: (id, cookie) => netease.artistBundle(id, cookie),
   albumBundle: (id, cookie) => netease.albumBundle(id, cookie),
   toplists: (cookie) => netease.toplists(cookie),
@@ -187,6 +195,7 @@ const qqAdapter: PlatformAdapter = {
     qq.searchPlaylists(keyword, page, limit, cookie),
   trackDetail: (id, cookie) => qq.trackDetail(id, cookie),
   lyric: (id, cookie) => qq.lyric(id, cookie),
+  radioBatch: (cookie, options) => qq.radioBatch(cookie, options),
   artistBundle: (id, cookie) => qq.artistBundle(id, cookie),
   albumBundle: (id, cookie) => qq.albumBundle(id, cookie),
   toplists: (cookie) => qq.toplists(cookie),

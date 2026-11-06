@@ -261,6 +261,16 @@ export interface DiscoverFeed {
   errors: Array<{ platform: Platform; section: string; message: string }>;
 }
 
+/** 电台（私人 FM / 猜你喜欢）续播的一批曲目。 */
+export interface RadioBatch {
+  /** 续播时原样带回，服务端据此记住这个电台已经推过哪些歌。 */
+  session: string;
+  platform: Platform;
+  items: UnifiedTrack[];
+  /** 上游是否还能继续请求；空批次仍为 true，由客户端冷却后重试。 */
+  hasMore: boolean;
+}
+
 export interface CollectionDetail {
   platform: Platform;
   id: string;

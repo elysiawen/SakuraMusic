@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { EntitlementPlatform, RoomEntitlementPending } from '@/api/room';
+import { usePlayerStore } from '@/stores/player';
 import { useRoomStore } from '@/stores/room';
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
@@ -18,8 +19,11 @@ import AppIcon from './AppIcon.vue';
  * 弹层（TogetherButton）与整页（TogetherView）共用这一份内容。
  */
 const room = useRoomStore();
+const player = usePlayerStore();
 const toast = useToast();
 const confirm = useConfirm();
+/** 私人电台与一起听互斥：电台播放中创建/加入/转移都不可用。 */
+const radioActive = computed(() => Boolean(player.radio));
 
 const joinCode = ref('');
 const busy = ref(false);
@@ -188,7 +192,7 @@ function initial(nickname: string): string {
  * 对面会收到「席位已被接走」，降级为旁观（房间继续显示在那台上，可随时转移回来）。
  */
 async function transferHere(): Promise<void> {
-  if (busy.value) return;
+  if (busy.value || radioActive.value) return;
   busy.value = true;
   try {
     await room.transfer();
@@ -198,7 +202,8 @@ async function transferHere(): Promise<void> {
 }
 
 async function createDuo(): Promise<void> {
-  if (busy.value) return;
+  // store 层也会拦，这里先挡住 UI 的 busy 转圈（邀请链接等路径由 store 提示）。
+  if (busy.value || radioActive.value) return;
   busy.value = true;
   try {
     await room.create(undefined, 'duo');
@@ -209,7 +214,7 @@ async function createDuo(): Promise<void> {
 
 async function joinRoom(): Promise<void> {
   const code = joinCode.value.trim();
-  if (!code || busy.value) return;
+  if (!code || busy.value || radioActive.value) return;
   busy.value = true;
   try {
     await room.join(code);
@@ -280,11 +285,20 @@ async function dissolveRoom(): Promise<void> {
 <template>
   <!-- 不在房间：创建（双人）/ 加入 -->
   <div v-if="!room.active" class="together">
-    <p class="muted together-intro">
-      和朋友在同一首歌上同步播放，任一方都能切歌、拖动进度。
+    <p class="muted together-intro" :class="{ 'together-warn': radioActive }">
+      {{
+        radioActive
+          ? '正在播放私人电台：退出电台后才能使用「一起听」。'
+          : '和朋友在同一首歌上同步播放，任一方都能切歌、拖动进度。'
+      }}
     </p>
 
-    <button class="btn btn-primary together-cta" type="button" :disabled="busy" @click="createDuo">
+    <button
+      class="btn btn-primary together-cta"
+      type="button"
+      :disabled="busy || radioActive"
+      @click="createDuo"
+    >
       <AppIcon name="users" :size="16" />
       创建双人一起听
     </button>
@@ -304,7 +318,14 @@ async function dissolveRoom(): Promise<void> {
         placeholder="输入房间码"
         @keyup.enter="joinRoom"
       />
-      <button class="btn" type="button" :disabled="busy || !joinCode.trim()" @click="joinRoom">加入</button>
+      <button
+        class="btn"
+        type="button"
+        :disabled="busy || !joinCode.trim() || radioActive"
+        @click="joinRoom"
+      >
+        加入
+      </button>
     </div>
   </div>
 
@@ -370,7 +391,12 @@ async function dissolveRoom(): Promise<void> {
         <AppIcon name="device" :size="14" />
         正在「{{ room.seatDeviceName ?? '你的另一台设备' }}」上播放，本机没在放。
       </p>
-      <button class="btn btn-primary together-cta" type="button" :disabled="busy" @click="transferHere">
+      <button
+        class="btn btn-primary together-cta"
+        type="button"
+        :disabled="busy || radioActive"
+        @click="transferHere"
+      >
         转移到本机
       </button>
       <p class="muted together-hint">转移之后，那台设备会恢复单独播放。</p>
@@ -578,6 +604,12 @@ async function dissolveRoom(): Promise<void> {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+/* 电台互斥提示：比普通说明更醒目一点。 */
+.together-intro.together-warn {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .together-cta {

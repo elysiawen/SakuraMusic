@@ -17,6 +17,7 @@ import type {
   PlatformAlbum,
   PlatformArtist,
   Quality,
+  RadioBatchOptions,
   UnifiedTrack,
 } from './types';
 import { trackKey } from './types';
@@ -524,13 +525,49 @@ export async function toplistTracks(
 
 /* ------------------------------ 推荐 ------------------------------ */
 
-/** “猜你喜欢”，等价于 QQ 音乐侧的个性化推荐流。 */
+/** “猜你喜欢”，等价于 QQ 音乐侧的个性化推荐流（首页板块用，固定 5 首、走上游缓存）。 */
 export async function guessRecommend(cookie: string | null): Promise<UnifiedTrack[]> {
   const data = unwrap(
     await upstreamJson<RawResponse>(BASE, '/recommend/get_guess_recommend', { cookie }),
     '/recommend/get_guess_recommend',
   );
   return mapQqSongs(asObj(data).songs);
+}
+
+/**
+ * 电台续播的一批：`get_radio_track` 本来就是「猜你喜欢」底层的电台服务，
+ * 只是 SDK 把 `num` 写死成 5、`song_ids` 写死成空。自建上游把这个 CGI 的参数开放了：
+ * 一次要 `limit` 首，并把会话里已听过的数字 song id 传过去，让上游少推重复歌。
+ *
+ * 这个端点**不进上游的 5 分钟缓存**（每次都要新的一批），所以网关的电台会话
+ * 还负责按 `track.key` 兜底去重。上游是旧版（没有该端点）时退回「猜你喜欢」，
+ * 那 5 首会被会话去重过滤掉，功能不会整块失效。
+ */
+export async function radioBatch(
+  cookie: string | null,
+  options: RadioBatchOptions,
+): Promise<UnifiedTrack[]> {
+  const songIds = options.exclude
+    .map((item) => item.numericId || item.id)
+    .filter((id) => /^\d+$/.test(id))
+    .slice(-30)
+    .join(',');
+  try {
+    const data = unwrap(
+      await upstreamJson<RawResponse>(BASE, '/recommend/get_radio_track', {
+        cookie,
+        query: { num: options.limit, song_ids: songIds },
+      }),
+      '/recommend/get_radio_track',
+    );
+    return mapQqSongs(asObj(data).songs);
+  } catch {
+    const data = unwrap(
+      await upstreamJson<RawResponse>(BASE, '/recommend/get_guess_recommend', { cookie }),
+      '/recommend/get_guess_recommend',
+    );
+    return mapQqSongs(asObj(data).songs);
+  }
 }
 
 export async function recommendNewSongs(cookie: string | null, type = 5): Promise<UnifiedTrack[]> {
